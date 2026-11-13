@@ -67,7 +67,10 @@ export class Http {
     const res = await fetch(url, init).catch((error: unknown) => {
       throw new CheckFailure(`${label}: could not reach the server (${describeError(error)})`);
     });
-    return { label, status: res.status, headers: res.headers, body: parseJson(await res.text()) };
+    const text = await res.text().catch((error: unknown) => {
+      throw new CheckFailure(`${label}: the response was cut off (${describeError(error)})`);
+    });
+    return { label, status: res.status, headers: res.headers, body: parseJson(text) };
   }
 
   call(method: "GET" | "POST", key: string, options: RequestOptions = {}): Promise<Reply> {

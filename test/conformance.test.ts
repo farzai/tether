@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
 import { main, USAGE } from "../src/conformance/command.ts";
 import { type CheckResult, runConformance } from "../src/conformance/runner.ts";
@@ -55,6 +57,7 @@ const ROUTES: [RouteKey, RegExp][] = [
   ["task_events", /POST \/tether\/v1\/tasks\/[^/\s]+\/events -> 404/],
   ["task_complete", /POST \/tether\/v1\/tasks\/[^/\s]+\/complete -> 404/],
   ["task_fail", /POST \/tether\/v1\/tasks\/[^/\s]+\/fail -> 404/],
+  ["revoke", /POST \/tether\/v1\/devices\/revoke -> 404/],
 ];
 
 describe.concurrent("conformance suite against a server missing an endpoint", () => {
@@ -83,9 +86,33 @@ describe.concurrent("conformance suite against a misbehaving server", () => {
     );
   });
 
-  it("fails when the server lets another device see a task", async () => {
-    const { run } = await runAgainst({ misbehave: { shareTasks: true } });
-    expect(failedNames(run.results)).toContain("another device cannot see the task");
+  it.each([
+    ["task", "another device cannot see the task"],
+    ["task_events", "another device cannot see the task"],
+    ["task_complete", "another device cannot see the task"],
+    ["task_fail", "another device cannot see the task"],
+    ["claim", "another user's device cannot claim the task"],
+    ["heartbeat", "a cancel reaches only the task's own user"],
+  ] as const)("fails when %s skips the ownership check", async (route, check) => {
+    const { run } = await runAgainst({ misbehave: { shareTasks: [route] } });
+    expect(failedNames(run.results)).toContain(check);
+  });
+
+  it.each([
+    ["foreignMcpUrl", "a claimed task's MCP URL is the discovery mcp endpoint"],
+    ["noRenew", "events renew the lease"],
+    ["redeliverCredential", "a delivered credential is not delivered again"],
+    ["reusableUserCode", "a user code approves only one pairing"],
+    ["ignoreRevoke", "revoke ends the device credential"],
+  ] as const)("fails when the server misbehaves with %s", async (flag, check) => {
+    const { run } = await runAgainst({ misbehave: { [flag]: true } });
+    expect(failedNames(run.results)).toContain(check);
+  });
+
+  it("passes a server that answers claim with 204 at once, as section 7 allows", async () => {
+    const { run } = await runAgainst({ misbehave: { noLongPoll: true } });
+    expect(failures(run.results)).toEqual([]);
+    expect(run.ok).toBe(true);
   });
 
   it("fails when the server rejects a report on a cancelled task", async () => {
@@ -130,7 +157,7 @@ describe.concurrent("conformance command", () => {
 
   it("exits 0 when every check passes, with the secret from the environment", async () => {
     const result = await withHooks({}, (url) => run([url], { TETHER_CONFORMANCE_SECRET: SECRET }));
-    expect(result.stdout).toContain("28 passed, 0 failed, 0 skipped");
+    expect(result.stdout).toContain("33 passed, 0 failed, 0 skipped");
     expect(result.status).toBe(0);
   });
 
@@ -160,6 +187,24 @@ describe.concurrent("conformance command", () => {
     expect(result.stderr).toBe(USAGE);
     expect(result.stdout).toBe("");
     expect(result.status).toBe(2);
+  });
+
+  it("reports a server that drops the connection in the middle of a body", async () => {
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json", "content-length": "100" });
+      res.write('{"protocol":');
+      setTimeout(() => res.destroy(), 20);
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      const result = await run([url, "--hook-secret", SECRET]);
+      expect(result.stdout).toMatch(/GET \/\.well-known\/tether: the response was cut off/);
+      expect(result.status).toBe(1);
+    } finally {
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    }
   });
 
   it("reports a server it cannot reach", async () => {

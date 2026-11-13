@@ -1,6 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import {
-  CheckFailure,
   type Discovery,
   expectBody,
   expectEqual,
@@ -27,7 +26,7 @@ export interface Context {
   pairing?: { deviceCode: string; userCode: string; intervalS: number };
   device?: string;
   deviceB?: string;
-  claimed?: { taskId: string; lease: Lease };
+  claimed?: { taskId: string; lease: Lease; mcpUrl: string };
   completed?: boolean;
 }
 
@@ -44,7 +43,7 @@ interface Lease {
 }
 
 interface Claimed {
-  task: { id: string };
+  task: { id: string; mcp: { url: string; token: string } };
   lease: Lease;
   attempt: number;
 }
@@ -52,6 +51,8 @@ interface Claimed {
 const CLIENT = { name: "tether-conformance", version: "1" };
 const UNKNOWN_TASK = "tsk_conformance_unknown";
 const LONG_POLL_S = 10;
+/** Long enough that a renewal lands on a later second than the claim, even on second precision. */
+const RENEW_GAP_MS = 1_100;
 
 // Helpers
 
@@ -67,11 +68,13 @@ async function startPairing(ctx: Context) {
   const reply = await ctx.http.call("POST", "pair_start", {
     body: { client: CLIENT, device_name: "Conformance" },
   });
-  return expectBody<{ device_code: string; user_code: string; interval: number }>(
-    reply,
-    200,
-    "pair-start.response",
-  );
+  return expectBody<{
+    device_code: string;
+    user_code: string;
+    interval: number;
+    verification_uri: string;
+    verification_uri_complete?: string;
+  }>(reply, 200, "pair-start.response");
 }
 
 async function poll(ctx: Context, deviceCode: string) {
@@ -95,18 +98,34 @@ async function pairNewDevice(ctx: Context): Promise<string> {
   return result.credential as string;
 }
 
+/** A context with a newly paired device of its own fresh user, so no earlier task leaks in. */
+async function freshUser(ctx: Context): Promise<Context> {
+  return { ...ctx, device: await pairNewDevice(ctx) };
+}
+
 async function enqueue(ctx: Context, leaseS?: number): Promise<string> {
   const body = leaseS === undefined ? {} : { lease_s: leaseS };
   const task = expectBody<{ id: string }>(await hook(ctx, "enqueue", body), 201, "task");
   return task.id;
 }
 
-async function claim(ctx: Context, waitS = LONG_POLL_S): Promise<Claimed> {
-  const reply = await ctx.http.call("POST", "claim", {
-    body: { wait_s: waitS },
-    credential: ctx.device as string,
-  });
-  return expectBody<Claimed>(reply, 200, "claim.response");
+const claimCall = (ctx: Context, waitS: number, credential = ctx.device) =>
+  ctx.http.call("POST", "claim", { body: { wait_s: waitS }, credential: credential as string });
+
+/**
+ * Claims until a task arrives or `LONG_POLL_S` passes. Section 7 lets a server answer 204 before
+ * `wait_s`, so a 204 only means "claim again".
+ */
+async function claim(ctx: Context): Promise<Claimed> {
+  const deadline = Date.now() + LONG_POLL_S * 1000;
+  for (;;) {
+    const waitS = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+    const reply = await claimCall(ctx, waitS);
+    if (reply.status !== 204 || Date.now() >= deadline) {
+      return expectBody<Claimed>(reply, 200, "claim.response");
+    }
+    await sleep(50);
+  }
 }
 
 async function enqueueAndClaim(ctx: Context, leaseS?: number): Promise<Claimed> {
@@ -156,6 +175,24 @@ function isLocalhost(url: URL): boolean {
   return ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
 }
 
+/** HTTPS, or plain HTTP on loopback only when the app itself is on loopback. */
+function expectSafeUrl(ctx: Context, label: string, value: string) {
+  const url = new URL(value);
+  const loopbackApp = isLocalhost(new URL(ctx.http.origin));
+  expectThat(
+    url.protocol === "https:" || (loopbackApp && url.protocol === "http:" && isLocalhost(url)),
+    `${label} must be an HTTPS URL`,
+  );
+}
+
+/** Settles both, then reports the first failure, so no request is left running into later checks. */
+async function both<A, B>(a: Promise<A>, b: Promise<B>): Promise<[A, B]> {
+  const [ra, rb] = await Promise.allSettled([a, b]);
+  if (ra.status === "rejected") throw ra.reason;
+  if (rb.status === "rejected") throw rb.reason;
+  return [ra.value, rb.value];
+}
+
 // Discovery and pairing
 
 const discoveryChecks: Check[] = [
@@ -169,10 +206,7 @@ const discoveryChecks: Check[] = [
       for (const [key, value] of Object.entries(all)) {
         const resolved = new URL(value, ctx.http.origin);
         expectThat(resolved.origin === ctx.http.origin, `endpoint ${key} is on another origin`);
-        expectThat(
-          resolved.protocol === "https:" || isLocalhost(resolved),
-          `endpoint ${key} must use HTTPS`,
-        );
+        expectSafeUrl(ctx, `endpoint ${key}`, resolved.href);
       }
       ctx.http.discovery = doc;
     },
@@ -182,6 +216,10 @@ const discoveryChecks: Check[] = [
     needs: ["discovery"],
     async run(ctx) {
       const started = await startPairing(ctx);
+      expectSafeUrl(ctx, "verification_uri", started.verification_uri);
+      if (started.verification_uri_complete !== undefined) {
+        expectSafeUrl(ctx, "verification_uri_complete", started.verification_uri_complete);
+      }
       ctx.pairing = {
         deviceCode: started.device_code,
         userCode: started.user_code,
@@ -243,13 +281,24 @@ const discoveryChecks: Check[] = [
     },
   },
   {
-    name: "approved pairing can be read again",
+    name: "a delivered credential is not delivered again",
     needs: ["pairing", "device"],
     async run(ctx) {
       const pairing = ctx.pairing as NonNullable<Context["pairing"]>;
       await sleep(pairing.intervalS * 1000);
       const again = await poll(ctx, pairing.deviceCode);
-      expectThat(again.credential === ctx.device, "a second poll returned a different credential");
+      expectEqual("pair_poll status after the credential was delivered", again.status, "expired");
+    },
+  },
+  {
+    name: "a user code approves only one pairing",
+    needs: ["pairing", "device"],
+    async run(ctx) {
+      const reply = await ctx.http.call("POST", "pair_approve", {
+        body: { user_code: ctx.pairing?.userCode },
+        hookSecret: ctx.hookSecret as string,
+      });
+      expectError(reply, 404, "not_found");
     },
   },
   {
@@ -330,6 +379,17 @@ const authChecks: Check[] = [
       expectError(await taskCall(ctx, "task", UNKNOWN_TASK), 404, "not_found");
     },
   },
+  {
+    name: "revoke ends the device credential",
+    needs: ["hooks"],
+    async run(ctx) {
+      const credential = await pairNewDevice(ctx);
+      expectStatus(await ctx.http.call("POST", "revoke", { credential }), 204);
+      const [, body] = AUTHENTICATED[0] as [string, unknown];
+      const after = await ctx.http.call("POST", "heartbeat", { body, credential });
+      expectError(after, 401, "unauthorized");
+    },
+  },
 ];
 
 // Claim and the lifecycle of one task
@@ -351,17 +411,28 @@ const lifecycleChecks: Check[] = [
     needs: ["device", "hooks"],
     async run(ctx) {
       const started = Date.now();
-      const [claimed, taskId] = await Promise.all([
+      const [claimed, taskId] = await both(
         claim(ctx),
         sleep(300).then(() => enqueue(ctx)),
-      ]);
+      );
       expectEqual("claimed task id", claimed.task.id, taskId);
       expectEqual("attempt", claimed.attempt, 1);
       expectThat(
         Date.now() - started < (LONG_POLL_S - 1) * 1000,
         "claim did not answer when the task arrived",
       );
-      ctx.claimed = { taskId, lease: claimed.lease };
+      ctx.claimed = { taskId, lease: claimed.lease, mcpUrl: claimed.task.mcp.url };
+    },
+  },
+  {
+    name: "a claimed task's MCP URL is the discovery mcp endpoint",
+    needs: ["claimed"],
+    async run(ctx) {
+      const expected = ctx.http.url("mcp").href;
+      expectThat(
+        ctx.claimed?.mcpUrl === expected,
+        `task mcp.url is not the discovery mcp endpoint ${expected}`,
+      );
     },
   },
   {
@@ -377,8 +448,13 @@ const lifecycleChecks: Check[] = [
     needs: ["claimed", "deviceB"],
     async run(ctx) {
       const { taskId, lease } = ctx.claimed as NonNullable<Context["claimed"]>;
-      const body = { lease_id: lease.id, events: [] };
-      for (const key of ["task", "task_events"]) {
+      const bodies: [string, unknown][] = [
+        ["task", undefined],
+        ["task_events", { lease_id: lease.id, events: [] }],
+        ["task_complete", { lease_id: lease.id, exit_code: 0, duration_ms: 1 }],
+        ["task_fail", { lease_id: lease.id, reason: "agent_error" }],
+      ];
+      for (const [key, body] of bodies) {
         expectError(await taskCall(ctx, key, taskId, body, ctx.deviceB), 404, "not_found");
       }
     },
@@ -389,6 +465,7 @@ const lifecycleChecks: Check[] = [
     async run(ctx) {
       const { taskId, lease } = ctx.claimed as NonNullable<Context["claimed"]>;
       const list = [{ at: new Date().toISOString(), stage: "started", message: "conformance" }];
+      await sleep(RENEW_GAP_MS);
       for (const batch of [list, []]) {
         const reply = await events(ctx, taskId, lease.id, batch);
         const body = expectBody<{ status: string; lease: Lease }>(
@@ -399,8 +476,8 @@ const lifecycleChecks: Check[] = [
         expectEqual("events status", body.status, "leased");
         expectEqual("renewed lease id", body.lease.id, lease.id);
         expectThat(
-          Date.parse(body.lease.expires_at) >= Date.parse(lease.expires_at),
-          "events moved the lease expiry backwards",
+          Date.parse(body.lease.expires_at) > Date.parse(lease.expires_at),
+          "events did not move the lease expiry forward",
         );
       }
     },
@@ -435,80 +512,100 @@ const lifecycleChecks: Check[] = [
   },
 ];
 
-// Fail, cancel and lease expiry, each on its own task
+// Fail, cancel, isolation and lease expiry, each for its own fresh user
+
+/** An outcome check: runs `body` with a fresh user, so a task left by an earlier check cannot leak in. */
+const outcome = (
+  name: string,
+  body: (ctx: Context) => Promise<void>,
+  extra: Need[] = [],
+): Check => ({
+  name,
+  needs: ["device", "hooks", ...extra],
+  run: async (ctx) => body(await freshUser(ctx)),
+});
 
 const outcomeChecks: Check[] = [
-  {
-    name: "fail is idempotent per lease",
-    needs: ["device", "hooks"],
-    async run(ctx) {
-      const { task, lease } = await enqueueAndClaim(ctx);
-      await expectReport(fail(ctx, task.id, lease.id), "task-fail.response", "failed");
-      await expectReport(fail(ctx, task.id, lease.id), "task-fail.response", "failed");
-      expectError(await complete(ctx, task.id, lease.id), 409, "invalid_state");
-      await expectTaskStatus(ctx, task.id, "failed");
+  outcome("fail is idempotent per lease", async (ctx) => {
+    const { task, lease } = await enqueueAndClaim(ctx);
+    await expectReport(fail(ctx, task.id, lease.id), "task-fail.response", "failed");
+    await expectReport(fail(ctx, task.id, lease.id), "task-fail.response", "failed");
+    expectError(await complete(ctx, task.id, lease.id), 409, "invalid_state");
+    await expectTaskStatus(ctx, task.id, "failed");
+  }),
+  outcome("fail rejects an unknown reason", async (ctx) => {
+    const { task, lease } = await enqueueAndClaim(ctx);
+    expectError(await fail(ctx, task.id, lease.id, "bogus"), 400, "invalid_request");
+    await expectReport(fail(ctx, task.id, lease.id), "task-fail.response", "failed");
+  }),
+  outcome("cancel reaches the client", async (ctx) => {
+    const { task, lease } = await enqueueAndClaim(ctx);
+    await cancelTask(ctx, task.id);
+    await expectTaskStatus(ctx, task.id, "cancelled");
+    expectEqual("heartbeat cancelled", await heartbeatCancelled(ctx, task.id), [task.id]);
+    await expectReport(events(ctx, task.id, lease.id), "task-events.response", "cancelled");
+    const reason = "cancelled_by_user";
+    await expectReport(fail(ctx, task.id, lease.id, reason), "task-fail.response", "cancelled");
+    await expectReport(complete(ctx, task.id, lease.id), "task-complete.response", "cancelled");
+  }),
+  outcome(
+    "a cancel reaches only the task's own user",
+    async (ctx) => {
+      const { task } = await enqueueAndClaim(ctx);
+      await cancelTask(ctx, task.id);
+      const seen = await heartbeatCancelled(ctx, task.id, ctx.deviceB);
+      expectEqual("another user's heartbeat cancelled", seen, []);
     },
-  },
-  {
-    name: "fail rejects an unknown reason",
-    needs: ["device", "hooks"],
-    async run(ctx) {
-      const { task, lease } = await enqueueAndClaim(ctx);
-      expectError(await fail(ctx, task.id, lease.id, "bogus"), 400, "invalid_request");
-      await expectReport(fail(ctx, task.id, lease.id), "task-fail.response", "failed");
+    ["deviceB"],
+  ),
+  outcome(
+    "another user's device cannot claim the task",
+    async (ctx) => {
+      const taskId = await enqueue(ctx);
+      expectStatus(await claimCall(ctx, 0, ctx.deviceB), 204);
+      const claimed = await claim(ctx);
+      expectEqual("claimed task id", claimed.task.id, taskId);
     },
-  },
-  {
-    name: "cancel reaches the client",
-    needs: ["device", "hooks"],
-    async run(ctx) {
-      const { task, lease } = await enqueueAndClaim(ctx);
-      const cancelled = await hook(ctx, "cancel", undefined, task.id);
-      expectEqual(
-        "cancel hook status",
-        expectBody<{ status: string }>(cancelled, 200, "task-status.response").status,
-        "cancelled",
-      );
-      await expectTaskStatus(ctx, task.id, "cancelled");
-      await expectHeartbeatCancel(ctx, task.id);
-      await expectReport(events(ctx, task.id, lease.id), "task-events.response", "cancelled");
-      const reason = "cancelled_by_user";
-      await expectReport(fail(ctx, task.id, lease.id, reason), "task-fail.response", "cancelled");
-      await expectReport(complete(ctx, task.id, lease.id), "task-complete.response", "cancelled");
-    },
-  },
-  {
-    name: "an expired lease makes the task claimable again",
-    needs: ["device", "hooks"],
-    async run(ctx) {
-      const first = await enqueueAndClaim(ctx, 1);
-      await sleep(1_200);
-      await expectTaskStatus(ctx, first.task.id, "queued");
-      const second = await claim(ctx);
-      expectEqual("re-claimed task id", second.task.id, first.task.id);
-      expectEqual("attempt", second.attempt, 2);
-      expectThat(second.lease.id !== first.lease.id, "a new claim reused the old lease id");
-      expectError(await events(ctx, first.task.id, first.lease.id), 409, "lease_lost");
-      await expectReport(
-        complete(ctx, second.task.id, second.lease.id),
-        "task-complete.response",
-        "completed",
-      );
-    },
-  },
-  {
-    name: "a report on an expired lease nobody claimed is accepted",
-    needs: ["device", "hooks"],
-    async run(ctx) {
-      const { task, lease } = await enqueueAndClaim(ctx, 1);
-      await sleep(1_200);
-      await expectReport(events(ctx, task.id, lease.id), "task-events.response", "leased");
-      await expectReport(complete(ctx, task.id, lease.id), "task-complete.response", "completed");
-    },
-  },
+    ["deviceB"],
+  ),
+  outcome("an expired lease makes the task claimable again", async (ctx) => {
+    const first = await enqueueAndClaim(ctx, 1);
+    await sleep(1_200);
+    await expectTaskStatus(ctx, first.task.id, "queued");
+    const second = await claim(ctx);
+    expectEqual("re-claimed task id", second.task.id, first.task.id);
+    expectEqual("attempt", second.attempt, 2);
+    expectThat(second.lease.id !== first.lease.id, "a new claim reused the old lease id");
+    expectThat(
+      second.task.mcp.token !== first.task.mcp.token,
+      "a new claim reused the old task token",
+    );
+    expectError(await events(ctx, first.task.id, first.lease.id), 409, "lease_lost");
+    await expectReport(
+      complete(ctx, second.task.id, second.lease.id),
+      "task-complete.response",
+      "completed",
+    );
+  }),
+  outcome("a report on an expired lease nobody claimed is accepted", async (ctx) => {
+    const { task, lease } = await enqueueAndClaim(ctx, 1);
+    await sleep(1_200);
+    await expectReport(events(ctx, task.id, lease.id), "task-events.response", "leased");
+    await expectReport(complete(ctx, task.id, lease.id), "task-complete.response", "completed");
+  }),
 ];
 
-async function expectHeartbeatCancel(ctx: Context, taskId: string) {
+async function cancelTask(ctx: Context, taskId: string) {
+  const cancelled = await hook(ctx, "cancel", undefined, taskId);
+  expectEqual(
+    "cancel hook status",
+    expectBody<{ status: string }>(cancelled, 200, "task-status.response").status,
+    "cancelled",
+  );
+}
+
+/** Sends a heartbeat that lists `taskId` and returns the ids the server says were cancelled. */
+async function heartbeatCancelled(ctx: Context, taskId: string, credential = ctx.device) {
   const body = {
     client: CLIENT,
     adapters: [],
@@ -517,12 +614,9 @@ async function expectHeartbeatCancel(ctx: Context, taskId: string) {
   };
   const reply = await ctx.http.call("POST", "heartbeat", {
     body,
-    credential: ctx.device as string,
+    credential: credential as string,
   });
-  const result = expectBody<{ cancelled: string[] }>(reply, 200, "heartbeat.response");
-  if (!result.cancelled.includes(taskId)) {
-    throw new CheckFailure(`heartbeat did not list ${taskId} as cancelled`);
-  }
+  return expectBody<{ cancelled: string[] }>(reply, 200, "heartbeat.response").cancelled;
 }
 
 export const CHECKS: Check[] = [
