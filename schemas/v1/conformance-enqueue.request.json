@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/farzai/tether/main/schemas/v1/conformance-enqueue.request.json",
+  "title": "Conformance hook: enqueue a task",
+  "type": "object",
+  "required": [],
+  "properties": {
+    "task": {
+      "type": "object",
+      "description": "Task fields to use instead of the server's defaults."
+    },
+    "lease_s": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 3600
+    }
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/farzai/tether/main/schemas/v1/task-events.request.json",
+  "title": "Task events request",
+  "type": "object",
+  "required": ["lease_id", "events"],
+  "properties": {
+    "lease_id": {
+      "$ref": "common.json#/$defs/id"
+    },
+    "events": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "required": ["at", "stage"],
+        "properties": {
+          "at": {
+            "$ref": "common.json#/$defs/timestamp"
+          },
+          "stage": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "message": {
+            "type": "string",
+            "maxLength": 2000
+          },
+          "usage": {
+            "$ref": "common.json#/$defs/usage"
+          }
+        }
+      }
+    }
+  }
+}

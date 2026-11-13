@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/farzai/tether/main/schemas/v1/heartbeat.response.json",
+  "title": "Heartbeat response",
+  "type": "object",
+  "required": ["server_time", "heartbeat_interval_s", "cancelled"],
+  "properties": {
+    "server_time": {
+      "$ref": "common.json#/$defs/timestamp"
+    },
+    "heartbeat_interval_s": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "cancelled": {
+      "type": "array",
+      "items": {
+        "$ref": "common.json#/$defs/id"
+      },
+      "uniqueItems": true
+    }
+  }
+}

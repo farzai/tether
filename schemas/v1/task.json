@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/farzai/tether/main/schemas/v1/task.json",
+  "title": "Task payload",
+  "type": "object",
+  "required": ["id", "type", "title", "instructions", "mcp", "tools", "limits"],
+  "properties": {
+    "id": { "$ref": "common.json#/$defs/id" },
+    "type": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "title": { "type": "string", "maxLength": 500 },
+    "created_at": { "$ref": "common.json#/$defs/timestamp" },
+    "instructions": { "type": "string" },
+    "skill": {
+      "type": "object",
+      "required": ["name", "version", "markdown"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "markdown": { "type": "string" }
+      }
+    },
+    "input": { "type": "object" },
+    "mcp": {
+      "type": "object",
+      "required": ["url", "token"],
+      "properties": {
+        "url": { "type": "string", "format": "uri" },
+        "token": { "type": "string", "minLength": 1 }
+      }
+    },
+    "tools": {
+      "type": "object",
+      "required": ["requested"],
+      "properties": {
+        "requested": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "required": ["timeout_s", "max_budget_usd"],
+      "properties": {
+        "timeout_s": { "type": "integer", "minimum": 1 },
+        "max_budget_usd": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    }
+  }
+}
