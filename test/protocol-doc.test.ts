@@ -92,7 +92,14 @@ describe("schema limits on app-supplied values", () => {
     ),
   });
 
-  it.each(["/tether/v1/x", "https://app.example/x"])("accepts the endpoint %s", (endpoint) => {
+  it.each([
+    "/tether/v1/x",
+    "https://app.example/x",
+    "https://app.example:8443/x?a=b&c=d",
+    "https://xn--bcher-kva.example/x",
+    "https://app.example/a%2Fb",
+    "/tether/v1/tasks/{id}/a%2Fb?x=1",
+  ])("accepts the endpoint %s", (endpoint) => {
     expect(validate("discovery", discovery(endpoint))).toEqual({ ok: true });
   });
 
@@ -111,6 +118,13 @@ describe("schema limits on app-supplied values", () => {
     "https://app.example/x\n",
     "/a\u2028\\b",
     "https://x@app.example/x",
+    "https://app.example%40evil.example/x",
+    "https://app.example%2F/x",
+    "/tether/v1/\u0000x",
+    "/tether/v1/\u001fx",
+    "/tether/v1/ x",
+    "/tether/v1/x\u007f",
+    "https://app.example/\u000bx",
   ])("refuses the endpoint %j", (endpoint) => {
     expect(validate("discovery", discovery(endpoint)).ok).toBe(false);
   });
@@ -146,9 +160,27 @@ describe("schema limits on app-supplied values", () => {
     { icon: "https://app.example@evil.example/icon.png" },
     { url: "https://app.example:pw@evil.example/" },
     { url: "https://@evil.example/" },
+    { icon: "https://app.example%40evil.example/i.png" },
+    { url: "https://app.example%40evil.example/" },
   ])("refuses the app links %j", (links) => {
     const doc = { ...discovery("/tether/v1/x"), app: { name: "App", ...links } };
     expect(validate("discovery", doc).ok).toBe(false);
+  });
+
+  it("refuses an MCP URL with a percent sign in the host", () => {
+    const mcp = {
+      url: "https://app.example%40evil.example/mcp",
+      token: "tok_0123456789abcdef0123456789",
+    };
+    expect(validate("task", task({ mcp })).ok).toBe(false);
+  });
+
+  it.each([
+    { icon: "https://app.example:8443/icon.png", url: "https://app.example/?a=b&c=d" },
+    { icon: "https://xn--bcher-kva.example/icon.png", url: "https://app.example/a%2Fb" },
+  ])("accepts the app links %j", (links) => {
+    const doc = { ...discovery("/tether/v1/x"), app: { name: "App", ...links } };
+    expect(validate("discovery", doc)).toEqual({ ok: true });
   });
 
   it("accepts app links with an @ in the path or query", () => {

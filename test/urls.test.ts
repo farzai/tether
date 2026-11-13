@@ -8,6 +8,9 @@ describe("isAllowedUrl", () => {
     ["http://127.0.0.1:4000", "http://127.0.0.1:4000/pair"],
     ["http://localhost:4000", "http://localhost:4000/pair"],
     ["http://[::1]:4000", "https://app.example/pair"],
+    ["https://app.example", "https://app.example:8443/pair?next=/a&b=c"],
+    ["https://app.example", "https://xn--bcher-kva.example/pair"],
+    ["https://app.example", "https://app.example/a%2Fb/pair"],
   ])("allows %s to use %s", (origin, url) => {
     expect(isAllowedUrl(origin, url)).toBe(true);
   });
@@ -22,6 +25,9 @@ describe("isAllowedUrl", () => {
     ["http://127.0.0.1:4000", "http://app.example/pair"],
     ["http://localhost:4000", "http://10.0.0.1/pair"],
     ["http://[::1]:4000", "http://localhost.example/pair"],
+    ["https://app.example", "https://app.example%40evil.example/i.png"],
+    ["https://app.example", "https://app.example:99999/pair"],
+    ["https://app.example", "not a url"],
   ])("refuses %s using %s", (origin, url) => {
     expect(isAllowedUrl(origin, url)).toBe(false);
   });

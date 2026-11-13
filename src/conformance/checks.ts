@@ -1,5 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import {
+  CheckFailure,
   type Discovery,
   expectBody,
   expectEqual,
@@ -206,7 +207,8 @@ const discoveryChecks: Check[] = [
       const doc = expectBody<Discovery>(await ctx.http.request("GET", url), 200, "discovery");
       const all = { ...doc.endpoints, ...doc.conformance };
       for (const [key, value] of Object.entries(all)) {
-        const resolved = new URL(value, ctx.http.origin);
+        const resolved = URL.parse(value, ctx.http.origin);
+        if (!resolved) throw new CheckFailure(`endpoint ${key} is not a valid URL`);
         expectThat(resolved.origin === ctx.http.origin, `endpoint ${key} is on another origin`);
         expectSafeUrl(ctx, `endpoint ${key}`, resolved.href);
       }

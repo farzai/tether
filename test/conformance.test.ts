@@ -154,6 +154,23 @@ describe.concurrent("conformance suite against an HTTPS app", () => {
     expect(discoveryResult(run)?.outcome).toBe("fail");
     expect(discoveryResult(run)?.message).toBe(`app.${key} must be an HTTPS URL`);
   });
+
+  it.each(["https://app.example%40evil.example/i.png", "https://app.example:99999/i.png"])(
+    "fails one check, not the run, when app.icon is %s",
+    async (icon) => {
+      const run = await runAsHttps({ misbehave: { appLinks: { icon } } });
+      expect(failures(run.results).map((r) => r.name)).toEqual(["discovery document"]);
+      expect(run.report).toContain("FAIL  discovery document");
+    },
+  );
+
+  it("fails one check, not the run, when an endpoint has a port WHATWG cannot parse", async () => {
+    const run = await runAsHttps({
+      misbehave: { endpoints: { revoke: `${HTTPS_ORIGIN}:99999/r` } },
+    });
+    expect(failures(run.results).map((r) => r.name)).toEqual(["discovery document"]);
+    expect(discoveryResult(run)?.message).toBe("endpoint revoke is not a valid URL");
+  });
 });
 
 describe.concurrent("conformance suite without hooks", () => {

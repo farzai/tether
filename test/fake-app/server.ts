@@ -58,6 +58,8 @@ export interface Misbehaviour extends Omit<StateMisbehaviour, "claimAnyUser"> {
   noLongPoll?: boolean;
   /** Advertise these `app.icon` / `app.url` values in discovery. */
   appLinks?: { icon?: string; url?: string };
+  /** Advertise these values in discovery's `endpoints` instead of the real paths. */
+  endpoints?: Partial<Record<RouteKey, string>>;
 }
 
 type Auth = "none" | "device" | "hook" | "hook+device";
@@ -282,7 +284,7 @@ function discovery(opts: FakeAppOptions): Record<string, unknown> {
   const doc: Record<string, unknown> = {
     protocol: "tether/1",
     app: { name: "Fake App", ...opts.misbehave.appLinks },
-    endpoints: { ...pick(PROTOCOL_KEYS), mcp: MCP_PATH },
+    endpoints: { ...pick(PROTOCOL_KEYS), mcp: MCP_PATH, ...opts.misbehave.endpoints },
   };
   if (opts.hookSecret !== undefined) doc.conformance = pick(HOOK_KEYS);
   return doc;
