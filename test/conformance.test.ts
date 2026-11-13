@@ -164,7 +164,9 @@ describe.concurrent("conformance command", () => {
 
   it("reports a server it cannot reach", async () => {
     const result = await run([await closedUrl(), "--hook-secret", SECRET]);
-    expect(result.stdout).toMatch(/GET \/\.well-known\/tether: could not reach the server \(\w+/);
+    expect(result.stdout).toMatch(
+      /GET \/\.well-known\/tether: could not reach the server \(Error: connect ECONNREFUSED/,
+    );
     expect(result.status).toBe(1);
   });
 });

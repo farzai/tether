@@ -29,17 +29,29 @@ export interface RequestOptions {
 
 export class Http {
   readonly origin: string;
-  discovery?: Discovery;
+  #discovery?: Discovery;
+  #endpoints: Record<string, string> = {};
 
   constructor(baseUrl: URL) {
     this.origin = baseUrl.origin;
   }
 
-  /** Resolves an endpoint key from discovery (protocol or conformance) to a URL. */
+  get discovery(): Discovery | undefined {
+    return this.#discovery;
+  }
+
+  /** Records the discovery document; protocol and conformance endpoints share one key space. */
+  set discovery(doc: Discovery) {
+    this.#discovery = doc;
+    this.#endpoints = { ...doc.endpoints, ...doc.conformance };
+  }
+
+  /** Resolves an endpoint key from discovery to a URL, filling `{id}` when given. */
   url(key: string, id?: string): URL {
-    const template = this.discovery?.endpoints[key] ?? this.discovery?.conformance?.[key];
+    const template = this.#endpoints[key];
     if (template === undefined) throw new CheckFailure(`discovery has no endpoint "${key}"`);
-    return new URL(template.replace("{id}", encodeURIComponent(id ?? "")), this.origin);
+    const path = id === undefined ? template : template.replace("{id}", encodeURIComponent(id));
+    return new URL(path, this.origin);
   }
 
   async request(method: "GET" | "POST", url: URL, options: RequestOptions = {}): Promise<Reply> {
@@ -63,8 +75,10 @@ export class Http {
   }
 }
 
+/** Names the network error; Node and Bun put the useful part (such as ECONNREFUSED) in `cause`. */
 function describeError(error: unknown): string {
-  return String((error as { cause?: unknown }).cause ?? error);
+  const { cause } = error as { cause?: unknown };
+  return String(cause === undefined ? error : cause);
 }
 
 function parseJson(text: string): unknown {

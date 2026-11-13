@@ -64,3 +64,23 @@ describe("docs/protocol.md examples", () => {
     expect(result.ok).toBe(false);
   });
 });
+
+describe("validate", () => {
+  it("reports every problem with its path", () => {
+    const result = validate("task", { id: "t", type: "x", title: "y", limits: { timeout_s: 0 } });
+    expect(result).toEqual({
+      ok: false,
+      errors: [
+        "body must have required property 'instructions'",
+        "body must have required property 'mcp'",
+        "body must have required property 'tools'",
+        "body/limits must have required property 'max_budget_usd'",
+        "body/limits/timeout_s must be >= 1",
+      ],
+    });
+  });
+
+  it("refuses an unknown schema name", () => {
+    expect(() => validate("nope", {})).toThrow("unknown schema: nope");
+  });
+});

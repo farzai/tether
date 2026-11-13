@@ -9,19 +9,21 @@ export type Validation = { ok: true } | { ok: false; errors: string[] };
 
 const schemaDir = new URL("../../schemas/v1/", import.meta.url);
 
+// Ajv runs in strict mode by default, which rejects unknown schema keywords.
+const ajv = new Ajv2020({ allErrors: true });
+addFormats.default(ajv);
+
 function loadValidators(): Map<string, ValidateFunction> {
-  const ajv = new Ajv2020({ allErrors: true, strict: true });
-  addFormats.default(ajv);
   const names = readdirSync(schemaDir)
     .filter((file) => file.endsWith(".json"))
     .map((file) => file.slice(0, -".json".length));
   for (const name of names) {
     ajv.addSchema(JSON.parse(readFileSync(new URL(`${name}.json`, schemaDir), "utf8")));
   }
-  return new Map(names.map((name) => [name, requireSchema(ajv, name)]));
+  return new Map(names.map((name) => [name, requireSchema(name)]));
 }
 
-function requireSchema(ajv: Ajv2020, name: string): ValidateFunction {
+function requireSchema(name: string): ValidateFunction {
   const check = ajv.getSchema(`${SCHEMA_BASE}${name}.json`);
   if (!check) throw new Error(`schema ${name}.json has an $id that does not match its file name`);
   return check;
@@ -38,8 +40,6 @@ export function validate(name: string, data: unknown): Validation {
   const check = validators.get(name);
   if (!check) throw new Error(`unknown schema: ${name}`);
   if (check(data)) return { ok: true };
-  const errors = (check.errors ?? []).map(
-    (e) => `${e.instancePath || "/"} ${e.message ?? "invalid"}`,
-  );
+  const errors = ajv.errorsText(check.errors, { dataVar: "body", separator: "\n" }).split("\n");
   return { ok: false, errors };
 }
