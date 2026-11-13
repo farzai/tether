@@ -5,6 +5,19 @@
   "$defs": {
     "timestamp": { "type": "string", "format": "date-time" },
     "id": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "secret": {
+      "description": "A secret issued by the app: at least 128 bits from a secure random source (22 or more characters).",
+      "type": "string",
+      "minLength": 22,
+      "maxLength": 1000
+    },
+    "app_url": {
+      "description": "An absolute HTTPS URL, or plain HTTP on a loopback host (development and tests only).",
+      "type": "string",
+      "format": "uri",
+      "maxLength": 2000,
+      "pattern": "^(https://|http://(localhost|127\\.0\\.0\\.1|\\[::1\\])(:[0-9]+)?(/|$))"
+    },
     "client": {
       "type": "object",
       "required": ["name", "version"],
@@ -32,8 +45,6 @@
         "duration_s": { "type": "integer", "minimum": 1 }
       }
     },
-    "task_status": {
-      "enum": ["queued", "leased", "completed", "failed", "cancelled"]
-    }
+    "task_status": { "enum": ["queued", "leased", "completed", "failed", "cancelled"] }
   }
 }

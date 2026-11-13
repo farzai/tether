@@ -18,12 +18,10 @@
           "maxLength": 100
         },
         "icon": {
-          "type": "string",
-          "format": "uri"
+          "$ref": "common.json#/$defs/app_url"
         },
         "url": {
-          "type": "string",
-          "format": "uri"
+          "$ref": "common.json#/$defs/app_url"
         }
       }
     },
@@ -37,7 +35,9 @@
         "task",
         "task_events",
         "task_complete",
-        "task_fail"
+        "task_fail",
+        "revoke",
+        "mcp"
       ],
       "properties": {
         "pair_start": {
@@ -63,6 +63,12 @@
         },
         "task_fail": {
           "$ref": "#/$defs/endpoint"
+        },
+        "revoke": {
+          "$ref": "#/$defs/endpoint"
+        },
+        "mcp": {
+          "$ref": "#/$defs/endpoint"
         }
       }
     },
@@ -87,9 +93,11 @@
   },
   "$defs": {
     "endpoint": {
+      "description": "An absolute path on the app's origin (not starting with // or /\\), or an absolute HTTPS URL. Clients also require the URL to be on the discovery document's origin.",
       "type": "string",
-      "pattern": "^(/|https?://)",
-      "minLength": 1
+      "minLength": 1,
+      "maxLength": 2000,
+      "pattern": "^(/(?![/\\\\])|https://)"
     }
   }
 }

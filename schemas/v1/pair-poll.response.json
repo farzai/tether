@@ -14,7 +14,7 @@
     },
     {
       "type": "object",
-      "required": ["status", "device", "credential"],
+      "required": ["status", "device", "account", "credential"],
       "properties": {
         "status": {
           "const": "approved"
@@ -32,9 +32,20 @@
             }
           }
         },
+        "account": {
+          "type": "object",
+          "required": ["name"],
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200,
+              "description": "Display name of the account that approved the device."
+            }
+          }
+        },
         "credential": {
-          "type": "string",
-          "minLength": 20
+          "$ref": "common.json#/$defs/secret"
         }
       }
     }

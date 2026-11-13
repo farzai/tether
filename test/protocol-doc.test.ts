@@ -65,6 +65,100 @@ describe("docs/protocol.md examples", () => {
   });
 });
 
+describe("schema limits on app-supplied values", () => {
+  const discovery = (endpoint: string) => ({
+    protocol: "tether/1",
+    app: { name: "App" },
+    endpoints: Object.fromEntries(
+      [
+        "pair_start",
+        "pair_poll",
+        "heartbeat",
+        "claim",
+        "task",
+        "task_events",
+        "task_complete",
+        "task_fail",
+        "revoke",
+        "mcp",
+      ].map((key) => [key, endpoint]),
+    ),
+  });
+
+  it.each(["/tether/v1/x", "https://app.example/x"])("accepts the endpoint %s", (endpoint) => {
+    expect(validate("discovery", discovery(endpoint))).toEqual({ ok: true });
+  });
+
+  it.each(["//evil.example/x", "/\\evil.example/x", "http://app.example/x", "javascript:alert(1)"])(
+    "refuses the endpoint %s",
+    (endpoint) => {
+      expect(validate("discovery", discovery(endpoint)).ok).toBe(false);
+    },
+  );
+
+  const task = (patch: Record<string, unknown>) => ({
+    id: "tsk_1",
+    type: "t",
+    title: "T",
+    instructions: "Do it.",
+    mcp: { url: "https://app.example/mcp", token: "tok_0123456789abcdef0123456789" },
+    tools: { requested: ["WebSearch"] },
+    limits: { timeout_s: 60, max_budget_usd: 0.1 },
+    ...patch,
+  });
+
+  it.each(["http://169.254.169.254/latest/mcp", "http://app.example/mcp", "file:///etc/passwd"])(
+    "refuses the MCP URL %s",
+    (url) => {
+      const mcp = { url, token: "tok_0123456789abcdef0123456789" };
+      expect(validate("task", task({ mcp })).ok).toBe(false);
+    },
+  );
+
+  it("accepts a loopback MCP URL for development", () => {
+    const mcp = { url: "http://127.0.0.1:4000/mcp", token: "tok_0123456789abcdef0123456789" };
+    expect(validate("task", task({ mcp }))).toEqual({ ok: true });
+  });
+
+  it("refuses a short task token and a tool list smuggled into one name", () => {
+    expect(validate("task", task({ mcp: { url: "https://a.example/mcp", token: "t1" } })).ok).toBe(
+      false,
+    );
+    expect(validate("task", task({ tools: { requested: ["WebFetch,Bash"] } })).ok).toBe(false);
+  });
+
+  const started = (patch: Record<string, unknown>) => ({
+    device_code: "dc_7f3a9b2c4d5e6f708192a3b4",
+    user_code: "KQTM-WXPD",
+    verification_uri: "https://app.example/tether/pair",
+    interval: 5,
+    expires_in: 600,
+    ...patch,
+  });
+
+  it.each([
+    { verification_uri: "javascript:alert(1)" },
+    { verification_uri: "file:///Applications/Calculator.app" },
+    { verification_uri_complete: "http://app.example/pair?code=KQTM-WXPD" },
+    { user_code: "AB12" },
+    { user_code: "KQ7M-3XPD" },
+    { device_code: "dc_0000000000000001" },
+  ])("refuses the pairing start %j", (patch) => {
+    expect(validate("pair-start.response", started(patch)).ok).toBe(false);
+  });
+
+  it("requires the approving account in an approved pairing", () => {
+    const approved = {
+      status: "approved",
+      device: { id: "dev_1", name: "Mac" },
+      credential: "tdc_0123456789abcdef0123456789",
+    };
+    expect(validate("pair-poll.response", approved).ok).toBe(false);
+    const named = { ...approved, account: { name: "Ann" } };
+    expect(validate("pair-poll.response", named)).toEqual({ ok: true });
+  });
+});
+
 describe("validate", () => {
   it("reports every problem with its path", () => {
     const result = validate("task", { id: "t", type: "x", title: "y", limits: { timeout_s: 0 } });

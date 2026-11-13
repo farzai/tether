@@ -45,6 +45,9 @@ suite. Shared definitions (timestamps, ids, usage, lease) live in
   responses. The schemas therefore leave objects open (no `additionalProperties: false`).
 - Clients send `User-Agent: tether/<version>`.
 - Servers MUST use HTTPS, except on `localhost`, `127.0.0.1` and `::1` for development and tests.
+  A client MUST refuse to connect an app whose URL is plain HTTP on any other host.
+- A client MUST NOT follow a redirect to another origin on a request that carries a credential, a
+  device code or a task token; it treats such a redirect as an error.
 
 ## 2. Discovery
 
@@ -65,15 +68,25 @@ connects an app and again on each start; it MUST NOT hard-code endpoint paths.
     "task": "/tether/v1/tasks/{id}",
     "task_events": "/tether/v1/tasks/{id}/events",
     "task_complete": "/tether/v1/tasks/{id}/complete",
-    "task_fail": "/tether/v1/tasks/{id}/fail"
+    "task_fail": "/tether/v1/tasks/{id}/fail",
+    "revoke": "/tether/v1/devices/revoke",
+    "mcp": "/mcp"
   }
 }
 ```
 
 - `protocol` is `tether/1`. A v1 client MUST refuse any other value.
-- Each endpoint is either an absolute path (starting with `/`), resolved against the app's origin,
-  or an absolute URL on the **same origin** as the discovery document. A client MUST refuse an
-  endpoint on another origin, so the device credential is never sent to a third party.
+- `app.name` is shown to the user. `app.url` (the app's home page) and `app.icon` are optional and,
+  when present, MUST be HTTPS URLs (plain HTTP only on loopback, like the server itself). The client
+  only shows them; it never sends a credential to them.
+- Each endpoint is either an absolute path, resolved against the app's origin, or an absolute HTTPS
+  URL on the **same origin** as the discovery document. A path starts with exactly one `/`: a value
+  starting with `//` or `/\` is refused by the schema, because URL parsers resolve it to another
+  host. A client MUST refuse an endpoint on another origin, so the device credential is never sent
+  to a third party.
+- `mcp` is the URL of the app's MCP server, under the same rule: on the app's origin, so it is HTTPS
+  unless the app itself runs on loopback. Every task's `mcp.url` MUST equal it (see
+  [Tasks and leases](#6-tasks-and-leases)).
 - `{id}` is replaced with the URL-encoded task id.
 - `conformance` is present only on a server in test mode (see
   [Conformance testing](#16-conformance-testing)).
@@ -88,6 +101,8 @@ connects an app and again on each start; it MUST NOT hard-code endpoint paths.
 | `task_events` | POST | Progress events, lease renewal | device |
 | `task_complete` | POST | Report success | device |
 | `task_fail` | POST | Report failure | device |
+| `revoke` | POST | End this device's credential | device |
+| `mcp` | - | The app's MCP server, used by the agent with a task token | task token |
 
 ## 3. Authentication
 
@@ -127,9 +142,9 @@ Response `200` with [`schemas/v1/pair-start.response.json`](../schemas/v1/pair-s
 ```json
 {
   "device_code": "dc_7f3a9b2c4d5e6f708192a3b4",
-  "user_code": "KQ7M-3XPD",
+  "user_code": "KQTM-WXPD",
   "verification_uri": "https://paper.example/tether/pair",
-  "verification_uri_complete": "https://paper.example/tether/pair?code=KQ7M-3XPD",
+  "verification_uri_complete": "https://paper.example/tether/pair?code=KQTM-WXPD",
   "interval": 5,
   "expires_in": 600
 }
@@ -137,7 +152,33 @@ Response `200` with [`schemas/v1/pair-start.response.json`](../schemas/v1/pair-s
 
 - `device_code` is a secret known only to the client. `user_code` is short, easy to read aloud and
   type, and shown to the user with `verification_uri`.
+- `verification_uri` is the app's pairing page. `verification_uri_complete` is optional: the same
+  page with the user code filled in, which the client MAY open in the browser or show as a QR code.
+  Both MUST be HTTPS URLs (plain HTTP only when the app itself runs on loopback). A client MUST NOT
+  open or show any other kind of URI.
 - `interval` is the minimum number of seconds between polls; `expires_in` is how long the codes live.
+
+### Pairing security
+
+These rules follow RFC 8628 sections 5.1 and 5.4 and are requirements, not advice:
+
+- **Codes.** `user_code` is 8 characters from the alphabet `BCDFGHJKLMNPQRSTVWXZ` (no vowels, no
+  digits), written as two groups of four, `KQTM-WXPD`: about 34 bits. The app compares it without
+  case and without the hyphen. `device_code`, the device credential and every task token are at
+  least 128 bits from a cryptographically secure random source (the schemas require 22 or more
+  characters, which is necessary but not enough: a counter or a timestamp is never acceptable).
+- **Single use.** A user code approves or denies one pairing, once. Afterwards, and after
+  `expires_in`, the app answers that code as unknown.
+- **Rate-limited entry.** The pairing page MUST limit wrong user codes per account and per client
+  address (for example 5 a minute), so a code cannot be guessed while it lives.
+- **Explicit approval.** The pairing page MUST show the device name, the client name and version,
+  and when the pairing was started, and approves only when the signed-in user submits an explicit
+  POST that carries CSRF protection. Opening the page, including from `verification_uri_complete`,
+  MUST NOT approve anything: otherwise an attacker could send a victim the link of the attacker's
+  own pairing and bind the attacker's machine to the victim's account.
+- **Say which account.** The `approved` body names the approving account (`account.name`). The
+  client MUST show it, so a user whose code was approved under someone else's account notices
+  before running that account's tasks.
 
 ### pair/poll
 
@@ -161,6 +202,7 @@ one of:
 {
   "status": "approved",
   "device": { "id": "dev_01", "name": "MacBook (Tether)" },
+  "account": { "name": "Ann Example" },
   "credential": "tdc_9b1f0c2e7a4d4f1e8c3b6a5d2e1f0a9b"
 }
 ```
@@ -169,14 +211,26 @@ one of:
 |---|---|---|
 | `pending` | The user has not answered yet. | Poll again after `interval` seconds. |
 | `denied` | The user refused this device. | Stop; tell the user. |
-| `expired` | `expires_in` passed without an answer. | Stop; start pairing again. |
-| `approved` | The device is paired. | Store `credential` securely; pairing is done. |
+| `expired` | `expires_in` passed without an answer, or the credential was already delivered. | Stop; start pairing again. |
+| `approved` | The device is paired. | Show `account.name`, store `credential` securely; pairing is done. |
 
 - Polling sooner than `interval` gets `429 slow_down` with `Retry-After`; the client MUST then add 5
   seconds to its interval, as in RFC 8628.
 - An unknown `device_code` gets `404 not_found`.
-- **A lost response is safe.** After approval, polling with the same `device_code` returns the same
-  `approved` body (the same credential) until `expires_in` passes. After that it returns `expired`.
+- **The credential is delivered once.** The first poll after approval returns the `approved` body;
+  every later poll with that `device_code` returns `expired`. If that one response is lost, the
+  client pairs again, and the unused device shows in the user's device list, where the user can
+  revoke it.
+
+### Revoking a device
+
+`POST revoke` with the device credential and no body ends that credential: the app answers `204`,
+and every later call with it gets `401 unauthorized`. `tether disconnect` calls it before deleting
+the stored credential.
+
+The app MUST also list a user's paired devices on its web page (name, client, when paired, when last
+seen) and let the user revoke any of them. Revoking a device also ends the task tokens of its live
+leases.
 
 ## 5. Heartbeat
 
@@ -230,12 +284,26 @@ A **task** is one unit of AI work the app has queued for a user
 }
 ```
 
-- `instructions`, `skill.markdown` and `input` are written by the app and are **untrusted data** to
-  the client.
-- `mcp.token` is a **task-scoped token**: it only touches this task in the app, and it stops working
-  when the task's lease ends or the task reaches a terminal state.
-- `tools.requested` is a request, not a grant. The client grants only the intersection with the
-  user's local policy (see [Security](#15-security)).
+- **Instructions and data are separate channels.** `instructions` and `skill` MUST be written by the
+  app's own code (its developers and operators): they go to the agent as instructions. They MUST
+  NOT contain text written by users of the app (the task's requester included), by other users, or
+  taken from the web. Everything else the task needs, including the user's own request and any
+  content from other users or the web, goes in `input`. The client hands `input` to the agent only
+  as fenced data, marked as data that cannot give instructions (see [Security](#15-security)).
+- `title` is shown to the user in the client; it is never given to the agent.
+- The client still treats all of these as **untrusted**: nothing in a task changes Tether's own
+  behaviour beyond what this protocol defines.
+- `mcp.url` MUST equal the discovery document's `mcp` endpoint, resolved against the app's origin.
+  A client MUST refuse a task whose `mcp.url` differs: it runs nothing and reports `fail` with
+  reason `policy`. So a task can never point the agent at an MCP server on the user's machine, the
+  user's network or another host, and the task token never leaves the app's origin.
+- `mcp.token` is a **task token**: it only touches this task in the app. Each claim issues a fresh
+  one. It works exactly as long as its lease is current and the task is not terminal: it stops when
+  another claim takes the task, when the task is completed, failed or cancelled, or when the device
+  is revoked. Lease expiry alone does not stop it, matching the lease rule below.
+- `tools.requested` is a request, not a grant, and each entry is a single tool name (letters,
+  digits and `_`, starting with a letter, at most 64 characters). The client grants only the
+  intersection with the user's local policy (see [Security](#15-security)).
 - `limits` are the app's limits; the client MAY apply lower local limits and never higher ones.
 
 A **lease** gives one device the right to run one attempt of a task. A claim creates a lease:
@@ -245,8 +313,8 @@ A **lease** gives one device the right to run one attempt of a task. A claim cre
 ```
 
 - The default lease is 600 seconds. The client renews it with [events](#8-events), at least every
-  `duration_s / 3` seconds, even when nothing happened (an empty `events` list). A renewal also
-  extends the task's MCP token.
+  `duration_s / 3` seconds, even when nothing happened (an empty `events` list). A renewal sets the
+  expiry to the server's current time plus `duration_s`, so it always moves the expiry forward.
 - **A lease stays current until another claim takes the task.** When a lease expires the task becomes
   claimable again, but a slow report on the expired lease is still accepted as long as nobody has
   claimed the task since. Once a new claim takes the task, every call with the old lease gets
@@ -302,7 +370,7 @@ Response `204` when there is nothing to do, or `200` with
 ```
 
 - The server hands out the oldest claimable task of the credential's user and leases it to this
-  device. One claim returns at most one task.
+  device, never a task of another user. One claim returns at most one task.
 
 ## 8. Events
 
@@ -431,6 +499,8 @@ The client then MUST stop the agent process and SHOULD report `fail` with `cance
 app answers `200 {"status": "cancelled"}`. The task's MCP token stops working when the task is
 cancelled, so a still-running agent cannot write more results.
 
+The heartbeat's `cancelled` list only ever names tasks of the credential's own user.
+
 ## 12. State table
 
 How each call changes a task. `L` is the lease named in the request. "Current" means `L` is the
@@ -492,15 +562,26 @@ An error response has a 4xx or 5xx status and the body
 ## 15. Security
 
 - **Two credentials, two scopes.** The device credential only claims and reports tasks. Results are
-  written through the app's MCP server with the task-scoped `mcp.token`, which only touches that task
-  and stops working when the lease ends or the task reaches a terminal state.
-- **Local policy beats the app.** The app requests tools; the client grants only the intersection
-  with the user's local allow-list. Defaults: allow `WebSearch`, `WebFetch` and the app's MCP tools;
-  deny `Bash`, file writes outside the task's temporary directory, and every other MCP server. No
-  field in this protocol can widen the local policy, and `limits` can only lower local limits.
-- **Untrusted content.** Instructions, skills, inputs and anything fetched from the web are data for
-  the agent, never instructions to the client. The client's own base prompt says so.
-- **Same origin.** Endpoints stay on the discovery document's origin (see [Discovery](#2-discovery)).
+  written through the app's MCP server with the task's `mcp.token`, which only touches that task and
+  lives as long as its lease is current (see [Tasks and leases](#6-tasks-and-leases)).
+- **Pairing.** Codes, single use, rate limits, explicit approval and the account name follow
+  [Pairing security](#pairing-security). Users can see and revoke their devices in the app, and the
+  client can revoke its own credential.
+- **Default deny on the user's machine.** The agent gets only the tools the client grants: the
+  intersection of `tools.requested` with the user's local allow-list, plus the tools of the one MCP
+  server at the discovery `mcp` URL. Defaults: allow `WebSearch`, `WebFetch` and the app's MCP
+  tools; deny `Bash`, every other MCP server, and every file read or write outside the task's own
+  empty temporary directory. No field in this protocol can widen the local policy, and `limits` can
+  only lower local limits.
+- **Untrusted content stays data.** Only `instructions` and `skill`, which the app's own code
+  writes, reach the agent as instructions (in the system prompt). `input` is passed only inside a
+  fenced data block that the client's base prompt declares as data from the app that cannot give
+  instructions; the same holds for anything the agent fetches from the web or reads through MCP.
+  An app that puts user or web content into `instructions` or `skill` breaks this protocol.
+- **Same origin.** Endpoints, including `mcp`, stay on the discovery document's origin (see
+  [Discovery](#2-discovery)), and a client refuses a task whose `mcp.url` is anything else.
+- **URLs the client opens.** Only HTTPS verification URIs (see [pair/start](#pairstart)); the client
+  never opens a `file:`, `javascript:` or other URI from an app.
 - **No secrets in logs.** Device credentials, device codes and task tokens never appear in logs,
   events, error messages or reports, on either side.
 - **Credential storage.** The client keeps the device credential in the OS keychain where
@@ -512,13 +593,15 @@ This repository ships a conformance suite that any app server can run against it
 
 ```
 git clone https://github.com/farzai/tether && cd tether && bun install
-bun run conformance https://your-app.example --hook-secret "$TETHER_CONFORMANCE_SECRET"
+TETHER_CONFORMANCE_SECRET=... bun run conformance https://your-app.example
 ```
 
 The suite pairs a device, claims and reports tasks, checks every response against the schemas in
 this document, and walks the [state table](#12-state-table). It prints `PASS`, `FAIL` or `SKIP` per
 check and exits `0` only when every check passed (`1` on any failure or skip, `2` on a usage error).
-It never prints credentials, device codes or task tokens.
+It never prints credentials, device codes or task tokens. Pass the hook secret in the
+`TETHER_CONFORMANCE_SECRET` environment variable rather than with `--hook-secret`, so it stays out
+of shell history and process listings.
 
 To drive tasks without a human, a server in **test mode** exposes four hooks and lists them in the
 discovery document under `conformance`:
@@ -536,14 +619,14 @@ discovery document under `conformance`:
 
 | Hook | Method | Body | Auth | Effect |
 |---|---|---|---|---|
-| `pair_approve` | POST | [`schemas/v1/conformance-pair.request.json`](../schemas/v1/conformance-pair.request.json) | secret | Approves the pairing as a fresh test user with no tasks. `204`. |
-| `pair_deny` | POST | [`schemas/v1/conformance-pair.request.json`](../schemas/v1/conformance-pair.request.json) | secret | Denies the pairing. `204`. |
+| `pair_approve` | POST | [`schemas/v1/conformance-pair.request.json`](../schemas/v1/conformance-pair.request.json) | secret | Approves the pairing as a fresh test user with no tasks. `204`; `404 not_found` when no pending, unexpired pairing has that user code (including one already answered). |
+| `pair_deny` | POST | [`schemas/v1/conformance-pair.request.json`](../schemas/v1/conformance-pair.request.json) | secret | Denies the pairing. `204`; `404 not_found` as for `pair_approve`. |
 | `enqueue` | POST | [`schemas/v1/conformance-enqueue.request.json`](../schemas/v1/conformance-enqueue.request.json) | secret and device | Queues a task for the device's user; `201` with the task ([`task.json`](../schemas/v1/task.json)). |
-| `cancel` | POST | none | secret and device | Cancels the task as the user would; `200` with the task status. |
+| `cancel` | POST | none | secret and device | Cancels the task as the user would; `200` with the task status; `404 not_found` for a task of another user. |
 
 <!-- example: conformance-pair.request -->
 ```json
-{ "user_code": "KQ7M-3XPD" }
+{ "user_code": "KQTM-WXPD" }
 ```
 
 <!-- example: conformance-enqueue.request -->
@@ -553,7 +636,9 @@ discovery document under `conformance`:
 
 - `lease_s` sets the lease length for that task, so the suite can test lease expiry quickly.
 - Every hook call carries `Tether-Conformance-Secret: <secret>`. A wrong or missing secret gets
-  `401 unauthorized`.
+  `401 unauthorized`; `enqueue` and `cancel` also need the device credential and answer
+  `401 unauthorized` without it. An `enqueue` body that would make an invalid task gets
+  `400 invalid_request`.
 - **Hooks are for test deployments only.** A server MUST NOT advertise or answer them unless an
   operator has configured a conformance secret, and MUST NOT enable them in production: they let the
   secret holder create test users and tasks.

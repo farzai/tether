@@ -81,12 +81,14 @@ discovery, so the protocol can change without breaking older clients.
   app's MCP with a **task-scoped token** that expires with the lease and only touches that task.
 - **Local policy beats the app.** The app *requests* tools; Tether grants only the intersection with
   the user's local allow-list. Defaults: allow `WebSearch`, `WebFetch` and the app's MCP tools; deny
-  `Bash`, file writes outside the task's temp directory, and every other MCP server. An app can
-  never widen this.
+  `Bash`, every other MCP server, and every file read or write outside the task's temp directory.
+  The app's MCP server is the one at the discovery `mcp` URL on the app's own origin; a task naming
+  any other MCP URL is refused. An app can never widen this.
 - Each task runs in a fresh empty temp directory with isolated settings (no user hooks, no user MCP
   servers, no project `CLAUDE.md`), and the directory is deleted afterwards.
-- App instructions, skills and fetched web content are treated as untrusted data; the base prompt
-  Tether adds says so.
+- Only the app's own `instructions` and `skill` reach the agent as instructions. The task `input`
+  (where any user-written or web content goes) and anything fetched from the web are passed as
+  fenced data; the base prompt Tether adds says that data cannot give instructions.
 - Credentials are stored in the OS keychain where available, otherwise in a 0600 file.
 - Tether shows which apps are connected and what each task did (`tether logs`), so the user can
   audit what ran on their machine.
@@ -94,8 +96,8 @@ discovery, so the protocol can change without breaking older clients.
 ## 5. Running a task (Claude Code adapter)
 
 1. Write the task's MCP config (only the app's server, with the task token) to the temp directory.
-2. Run `claude -p` with: the instructions and the skill appended as system prompt, the task input as
-   the prompt, `--output-format stream-json`, `--mcp-config` with `--strict-mcp-config`,
+2. Run `claude -p` with: the instructions and the skill appended as system prompt, the task input
+   as the prompt inside a fenced data block, `--output-format stream-json`, `--mcp-config` with `--strict-mcp-config`,
    `--allowedTools` set to the granted tools, `--disallowedTools` for the rest,
    `--max-budget-usd` from the task limit (capped by the user's local cap), and no session
    persistence. Exact flags are verified against the installed Claude Code version by

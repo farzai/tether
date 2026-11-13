@@ -6,21 +6,18 @@
   "required": ["device_code", "user_code", "verification_uri", "interval", "expires_in"],
   "properties": {
     "device_code": {
-      "type": "string",
-      "minLength": 16
+      "$ref": "common.json#/$defs/secret"
     },
     "user_code": {
+      "description": "Eight characters from the alphabet BCDFGHJKLMNPQRSTVWXZ in two groups of four (about 34 bits).",
       "type": "string",
-      "minLength": 4,
-      "maxLength": 20
+      "pattern": "^[BCDFGHJKLMNPQRSTVWXZ]{4}-[BCDFGHJKLMNPQRSTVWXZ]{4}$"
     },
     "verification_uri": {
-      "type": "string",
-      "format": "uri"
+      "$ref": "common.json#/$defs/app_url"
     },
     "verification_uri_complete": {
-      "type": "string",
-      "format": "uri"
+      "$ref": "common.json#/$defs/app_url"
     },
     "interval": {
       "type": "integer",
