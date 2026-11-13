@@ -99,7 +99,6 @@ describe.concurrent("conformance suite against a misbehaving server", () => {
   });
 
   it.each([
-    ["foreignMcpUrl", "a claimed task's MCP URL is the discovery mcp endpoint"],
     ["noRenew", "events renew the lease"],
     ["redeliverCredential", "a delivered credential is not delivered again"],
     ["reusableUserCode", "a user code approves only one pairing"],
@@ -107,6 +106,15 @@ describe.concurrent("conformance suite against a misbehaving server", () => {
   ] as const)("fails when the server misbehaves with %s", async (flag, check) => {
     const { run } = await runAgainst({ misbehave: { [flag]: true } });
     expect(failedNames(run.results)).toContain(check);
+  });
+
+  it.each([
+    ["always", "claim returns a task enqueued while it waits"],
+    ["onRetry", "an expired lease makes the task claimable again"],
+  ] as const)("fails when the server hands out a foreign MCP URL %s", async (when, check) => {
+    const { run } = await runAgainst({ misbehave: { foreignMcpUrl: when } });
+    const failed = failures(run.results).find((r) => r.name === check);
+    expect(failed?.message).toContain("is not the discovery mcp endpoint");
   });
 
   it("passes a server that answers claim with 204 at once, as section 7 allows", async () => {
@@ -118,6 +126,33 @@ describe.concurrent("conformance suite against a misbehaving server", () => {
   it("fails when the server rejects a report on a cancelled task", async () => {
     const { run } = await runAgainst({ misbehave: { rejectReportOnCancelled: true } });
     expect(failedNames(run.results)).toContain("cancel reaches the client");
+  });
+});
+
+/** The fake app as if it were served at `https://app.example`. */
+const HTTPS_ORIGIN = "https://app.example";
+const runAsHttps = (options: Partial<FakeAppOptions>) =>
+  withFake({ hookSecret: SECRET, ...options }, (app) =>
+    runConformance({
+      baseUrl: HTTPS_ORIGIN,
+      hookSecret: SECRET,
+      fetch: (input, init) => fetch(String(input).replace(HTTPS_ORIGIN, app.url), init),
+    }),
+  );
+const discoveryResult = (run: { results: CheckResult[] }) =>
+  run.results.find((r) => r.name === "discovery document");
+
+describe.concurrent("conformance suite against an HTTPS app", () => {
+  it("passes the discovery check when the app links are HTTPS", async () => {
+    const appLinks = { icon: `${HTTPS_ORIGIN}/icon.png`, url: HTTPS_ORIGIN };
+    const run = await runAsHttps({ misbehave: { appLinks } });
+    expect(discoveryResult(run)).toEqual({ name: "discovery document", outcome: "pass" });
+  });
+
+  it.each(["icon", "url"] as const)("fails when app.%s is plain HTTP on loopback", async (key) => {
+    const run = await runAsHttps({ misbehave: { appLinks: { [key]: "http://127.0.0.1:9/x" } } });
+    expect(discoveryResult(run)?.outcome).toBe("fail");
+    expect(discoveryResult(run)?.message).toBe(`app.${key} must be an HTTPS URL`);
   });
 });
 
@@ -157,7 +192,7 @@ describe.concurrent("conformance command", () => {
 
   it("exits 0 when every check passes, with the secret from the environment", async () => {
     const result = await withHooks({}, (url) => run([url], { TETHER_CONFORMANCE_SECRET: SECRET }));
-    expect(result.stdout).toContain("33 passed, 0 failed, 0 skipped");
+    expect(result.stdout).toContain("32 passed, 0 failed, 0 skipped");
     expect(result.status).toBe(0);
   });
 
