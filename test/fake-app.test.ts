@@ -39,7 +39,10 @@ async function pairDevice(): Promise<string> {
 
 async function claimOne(credential: string) {
   const res = await call("POST", "/tether/v1/tasks/claim", { wait_s: 0 }, credential);
-  return res.body as { task: { id: string }; lease: { id: string; expires_at: string } };
+  return res.body as {
+    task: { id: string; mcp: { url: string; token: string } };
+    lease: { id: string; expires_at: string };
+  };
 }
 
 describe("pairing", () => {
@@ -63,17 +66,22 @@ describe("pairing", () => {
     expect((await call("POST", "/tether/v1/pair/poll", { device_code })).status).toBe(200);
   });
 
-  it("returns the same credential again after approval, until the codes expire", async () => {
+  it("delivers the credential once, with the approving account's name", async () => {
     const { device_code, user_code } = await startPairing();
     app.approvePairing(user_code);
     const first = await call("POST", "/tether/v1/pair/poll", { device_code });
+    expect(first.body.status).toBe("approved");
+    expect(first.body.account.name).toMatch(/^Test user \d+$/);
     now += 5_000;
     const second = await call("POST", "/tether/v1/pair/poll", { device_code });
-    expect(second.body).toEqual(first.body);
-    now += 60_000;
-    expect((await call("POST", "/tether/v1/pair/poll", { device_code })).body).toEqual({
-      status: "expired",
-    });
+    expect(second.body).toEqual({ status: "expired" });
+  });
+
+  it("issues user codes from the unambiguous alphabet, usable once", async () => {
+    const { user_code } = await startPairing();
+    expect(user_code).toMatch(/^[BCDFGHJKLMNPQRSTVWXZ]{4}-[BCDFGHJKLMNPQRSTVWXZ]{4}$/);
+    expect(app.approvePairing(user_code)).toBe(true);
+    expect(app.approvePairing(user_code)).toBe(false);
   });
 
   it("denies a pairing", async () => {
@@ -83,6 +91,29 @@ describe("pairing", () => {
       status: "denied",
     });
     expect(app.denyPairing("NO-SUCH")).toBe(false);
+  });
+});
+
+describe("devices", () => {
+  it("revokes a device credential", async () => {
+    const credential = await pairDevice();
+    const heartbeat = {
+      client,
+      adapters: [],
+      capacity: { max: 1, available: 1 },
+      tasks: [],
+    };
+    expect((await call("POST", "/tether/v1/heartbeat", heartbeat, credential)).status).toBe(200);
+    expect((await call("POST", "/tether/v1/devices/revoke", undefined, credential)).status).toBe(
+      204,
+    );
+    expect((await call("POST", "/tether/v1/heartbeat", heartbeat, credential)).status).toBe(401);
+  });
+
+  it("lists the MCP and revoke endpoints in discovery", async () => {
+    const discovery = await call("GET", "/.well-known/tether");
+    expect(discovery.body.endpoints.mcp).toBe("/mcp");
+    expect(discovery.body.endpoints.revoke).toBe("/tether/v1/devices/revoke");
   });
 });
 
@@ -129,6 +160,8 @@ describe("leases (state table)", () => {
     expect(status.body).toEqual({ id: task.id, status: "queued", attempts: 1 });
     const second = await call("POST", "/tether/v1/tasks/claim", { wait_s: 0 }, credential);
     expect(second.body.attempt).toBe(2);
+    expect(second.body.task.mcp.url).toBe(`${app.url}/mcp`);
+    expect(second.body.task.mcp.token).not.toBe(first.task.mcp.token);
     const late = await call(
       "POST",
       `/tether/v1/tasks/${task.id}/complete`,

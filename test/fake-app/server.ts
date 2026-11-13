@@ -7,7 +7,9 @@ import {
   type Device,
   errorReply,
   FakeState,
+  MCP_PATH,
   type Reply,
+  type StateMisbehaviour,
   type TaskPayload,
 } from "./state.ts";
 
@@ -21,6 +23,7 @@ export type RouteKey =
   | "task_events"
   | "task_complete"
   | "task_fail"
+  | "revoke"
   | "pair_approve"
   | "pair_deny"
   | "enqueue"
@@ -35,7 +38,24 @@ export interface FakeAppOptions {
   pairExpiresS: number;
   /** Routes the server lacks: they answer a bare 404 though discovery still lists them. */
   removeRoutes: RouteKey[];
-  misbehave: { skipAuth?: boolean; shareTasks?: boolean; rejectReportOnCancelled?: boolean };
+  misbehave: Misbehaviour;
+}
+
+/** Routes whose ownership check a misbehaving fake can skip. */
+export type OwnedRoute =
+  | "task"
+  | "task_events"
+  | "task_complete"
+  | "task_fail"
+  | "heartbeat"
+  | "claim";
+
+export interface Misbehaviour extends Omit<StateMisbehaviour, "claimAnyUser"> {
+  skipAuth?: boolean;
+  /** Routes that serve any user's task, as if the ownership check were missing. */
+  shareTasks?: OwnedRoute[];
+  /** Answer every claim at once instead of holding it, which section 7 allows. */
+  noLongPoll?: boolean;
 }
 
 type Auth = "none" | "device" | "hook" | "hook+device";
@@ -66,6 +86,7 @@ const PROTOCOL_KEYS: RouteKey[] = [
   "task_events",
   "task_complete",
   "task_fail",
+  "revoke",
 ];
 const HOOK_KEYS: RouteKey[] = ["pair_approve", "pair_deny", "enqueue", "cancel"];
 
@@ -102,7 +123,7 @@ export async function startFakeApp(
     pairIntervalS: opts.pairIntervalS,
     pairExpiresS: opts.pairExpiresS,
     origin: url,
-    rejectReportOnCancelled: opts.misbehave.rejectReportOnCancelled === true,
+    misbehave: { ...opts.misbehave, claimAnyUser: shares(opts, "claim") },
   });
   const routes = buildRoutes(state, opts);
   server.on("request", (req, res) => {
@@ -142,11 +163,15 @@ function closeServer(server: ReturnType<typeof createServer>): Promise<void> {
   return new Promise((resolve) => server.close(() => resolve()));
 }
 
+const shares = (opts: FakeAppOptions, key: OwnedRoute) =>
+  opts.misbehave.shareTasks?.includes(key) === true;
+
 function buildRoutes(state: FakeState, opts: FakeAppOptions): Route[] {
-  const task = (ctx: Context) => state.taskOf(ctx.device, ctx.id, opts.misbehave.shareTasks);
-  const withTask = (fn: (t: NonNullable<ReturnType<typeof task>>, ctx: Context) => Reply) => {
+  type Found = NonNullable<ReturnType<FakeState["taskOf"]>>;
+  const withTask = (key: OwnedRoute | "cancel", fn: (t: Found, ctx: Context) => Reply) => {
     return (ctx: Context) => {
-      const found = task(ctx);
+      const shareAll = key !== "cancel" && shares(opts, key);
+      const found = state.taskOf(ctx.device, ctx.id, shareAll);
       return found ? fn(found, ctx) : errorReply(404, "not_found", "Unknown task.");
     };
   };
@@ -163,37 +188,40 @@ function buildRoutes(state: FakeState, opts: FakeAppOptions): Route[] {
       state.pairPoll(ctx.body.device_code as string),
     ),
     route("heartbeat", "POST", "device", "heartbeat.request", (ctx) =>
-      state.heartbeat(ctx.device, ctx.body.tasks as string[]),
+      state.heartbeat(ctx.device, ctx.body.tasks as string[], shares(opts, "heartbeat")),
     ),
-    route("claim", "POST", "device", "claim.request", (ctx) => claim(state, ctx)),
+    route("claim", "POST", "device", "claim.request", (ctx) =>
+      claim(state, ctx, opts.misbehave.noLongPoll === true),
+    ),
     route(
       "task",
       "GET",
       "device",
       undefined,
-      withTask((t) => state.taskStatus(t)),
+      withTask("task", (t) => state.taskStatus(t)),
     ),
     route(
       "task_events",
       "POST",
       "device",
       "task-events.request",
-      withTask((t, ctx) => state.events(t, leaseId(ctx))),
+      withTask("task_events", (t, ctx) => state.events(t, leaseId(ctx))),
     ),
     route(
       "task_complete",
       "POST",
       "device",
       "task-complete.request",
-      withTask((t, ctx) => state.finish(t, leaseId(ctx), "completed")),
+      withTask("task_complete", (t, ctx) => state.finish(t, leaseId(ctx), "completed")),
     ),
     route(
       "task_fail",
       "POST",
       "device",
       "task-fail.request",
-      withTask((t, ctx) => state.finish(t, leaseId(ctx), "failed")),
+      withTask("task_fail", (t, ctx) => state.finish(t, leaseId(ctx), "failed")),
     ),
+    route("revoke", "POST", "device", undefined, (ctx) => state.revoke(ctx.device)),
     route("pair_approve", "POST", "hook", "conformance-pair.request", (ctx) =>
       hookAnswer(state.answerPairing(ctx.body.user_code as string, true)),
     ),
@@ -208,7 +236,7 @@ function buildRoutes(state: FakeState, opts: FakeAppOptions): Route[] {
       "POST",
       "hook+device",
       undefined,
-      withTask((t) => state.cancel(t)),
+      withTask("cancel", (t) => state.cancel(t)),
     ),
   ];
   const hooksOn = opts.hookSecret !== undefined;
@@ -240,6 +268,7 @@ const PATHS: Record<RouteKey, string> = {
   task_events: "/tether/v1/tasks/{id}/events",
   task_complete: "/tether/v1/tasks/{id}/complete",
   task_fail: "/tether/v1/tasks/{id}/fail",
+  revoke: "/tether/v1/devices/revoke",
   pair_approve: "/tether/v1/conformance/pair/approve",
   pair_deny: "/tether/v1/conformance/pair/deny",
   enqueue: "/tether/v1/conformance/tasks",
@@ -251,7 +280,7 @@ function discovery(opts: FakeAppOptions): Record<string, unknown> {
   const doc: Record<string, unknown> = {
     protocol: "tether/1",
     app: { name: "Fake App" },
-    endpoints: pick(PROTOCOL_KEYS),
+    endpoints: { ...pick(PROTOCOL_KEYS), mcp: MCP_PATH },
   };
   if (opts.hookSecret !== undefined) doc.conformance = pick(HOOK_KEYS);
   return doc;
@@ -270,8 +299,8 @@ function enqueue(state: FakeState, device: Device, body: Record<string, unknown>
   return { status: 201, body: payload };
 }
 
-async function claim(state: FakeState, ctx: Context): Promise<Reply> {
-  const deadline = Date.now() + (ctx.body.wait_s as number) * 1000;
+async function claim(state: FakeState, ctx: Context, noLongPoll: boolean): Promise<Reply> {
+  const deadline = noLongPoll ? 0 : Date.now() + (ctx.body.wait_s as number) * 1000;
   for (;;) {
     const reply = state.claim(ctx.device);
     if (reply) return reply;
@@ -334,6 +363,7 @@ const ANONYMOUS: Device = {
   id: "anonymous",
   name: "anonymous",
   userId: "anonymous",
+  accountName: "anonymous",
   credential: "",
 };
 

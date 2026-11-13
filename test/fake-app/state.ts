@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomInt } from "node:crypto";
 
 /**
  * In-memory app-side state for Tether Protocol v1. Every method returns the HTTP reply the
@@ -19,8 +19,25 @@ export interface StateOptions {
   pairIntervalS: number;
   pairExpiresS: number;
   origin: string;
-  /** Misbehaviour toggle for conformance tests: answer reports on cancelled tasks with 409. */
-  rejectReportOnCancelled: boolean;
+  /** Misbehaviour toggles that prove each conformance check can fail. */
+  misbehave: StateMisbehaviour;
+}
+
+export interface StateMisbehaviour {
+  /** Answer reports on cancelled tasks with 409. */
+  rejectReportOnCancelled?: boolean;
+  /** Hand out tasks whose MCP URL is not the discovery mcp endpoint. */
+  foreignMcpUrl?: boolean;
+  /** Answer events without moving the lease expiry. */
+  noRenew?: boolean;
+  /** Return the credential on every poll after approval. */
+  redeliverCredential?: boolean;
+  /** Let a user code approve a pairing again. */
+  reusableUserCode?: boolean;
+  /** Answer revoke without revoking. */
+  ignoreRevoke?: boolean;
+  /** Let a claim lease another user's task. */
+  claimAnyUser?: boolean;
 }
 
 export type TaskPayload = Record<string, unknown> & { id: string };
@@ -30,10 +47,12 @@ export interface Device {
   id: string;
   name: string;
   userId: string;
+  accountName: string;
   credential: string;
 }
 
-type PairingState = "pending" | "denied" | Device;
+/** `spent` is an approved pairing whose credential was delivered: it reads as expired. */
+type PairingState = "pending" | "denied" | "spent" | Device;
 
 interface Pairing {
   deviceCode: string;
@@ -74,6 +93,12 @@ export function errorReply(
 const ok = (body: unknown): Reply => ({ status: 200, body });
 const secret = (prefix: string) => `${prefix}_${randomBytes(16).toString("hex")}`;
 const iso = (ms: number) => new Date(ms).toISOString();
+/** RFC 8628 section 6.1: no vowels and no digits, so codes are easy to read and never spell words. */
+const USER_CODE_ALPHABET = "BCDFGHJKLMNPQRSTVWXZ";
+const userCodeGroup = () =>
+  Array.from({ length: 4 }, () => USER_CODE_ALPHABET[randomInt(USER_CODE_ALPHABET.length)]).join(
+    "",
+  );
 
 export class FakeState {
   readonly #options: StateOptions;
@@ -110,10 +135,9 @@ export class FakeState {
   // Pairing
 
   pairStart(deviceName: string): Reply {
-    const userCode = `${randomBytes(2).toString("hex")}-${randomBytes(2).toString("hex")}`;
     const pairing: Pairing = {
       deviceCode: this.#secret("dc"),
-      userCode: userCode.toUpperCase(),
+      userCode: `${userCodeGroup()}-${userCodeGroup()}`,
       deviceName,
       expiresAt: this.#now + this.#options.pairExpiresS * 1000,
       state: "pending",
@@ -143,13 +167,20 @@ export class FakeState {
       });
     }
     pairing.lastPollAt = this.#now;
-    return ok(pollBody(pairing.state));
+    const body = pollBody(pairing.state);
+    if (typeof pairing.state !== "string" && !this.#options.misbehave.redeliverCredential) {
+      pairing.state = "spent";
+    }
+    return ok(body);
   }
 
   /** Answers a pending, unexpired pairing; approval binds the device to a fresh user. */
   answerPairing(userCode: string, approve: boolean): boolean {
     const pairing = [...this.#pairings.values()].find(
-      (p) => p.userCode === userCode && p.state === "pending" && this.#now < p.expiresAt,
+      (p) =>
+        p.userCode === userCode &&
+        (p.state === "pending" || this.#options.misbehave.reusableUserCode === true) &&
+        this.#now < p.expiresAt,
     );
     if (!pairing) return false;
     pairing.state = approve ? this.#createDevice(pairing.deviceName) : "denied";
@@ -157,7 +188,14 @@ export class FakeState {
   }
 
   #createDevice(name: string): Device {
-    const device = { id: this.#id("dev"), name, userId: this.#id("usr"), credential: "" };
+    const userId = this.#id("usr");
+    const device = {
+      id: this.#id("dev"),
+      name,
+      userId,
+      accountName: `Test user ${this.#counter}`,
+      credential: "",
+    };
     device.credential = this.#secret("tdc");
     this.#devices.set(device.credential, device);
     return device;
@@ -167,10 +205,16 @@ export class FakeState {
     return credential === undefined ? undefined : this.#devices.get(credential);
   }
 
+  /** Ends the device's credential: every later call with it gets 401. */
+  revoke(device: Device): Reply {
+    if (!this.#options.misbehave.ignoreRevoke) this.#devices.delete(device.credential);
+    return { status: 204 };
+  }
+
   // Heartbeat
 
-  heartbeat(device: Device, taskIds: string[]): Reply {
-    const cancelled = taskIds.filter((id) => this.#taskOf(device, id)?.cancelled === true);
+  heartbeat(device: Device, taskIds: string[], shareAll = false): Reply {
+    const cancelled = taskIds.filter((id) => this.taskOf(device, id, shareAll)?.cancelled === true);
     return ok({ server_time: iso(this.#now), heartbeat_interval_s: 15, cancelled });
   }
 
@@ -194,10 +238,16 @@ export class FakeState {
       created_at: iso(this.#now),
       instructions: "Reply with OK.",
       input: {},
-      mcp: { url: `${this.#options.origin}/mcp`, token: this.#secret("mcp") },
+      mcp: { url: this.#mcpUrl(), token: this.#secret("mcp") },
       tools: { requested: ["WebSearch"] },
       limits: { timeout_s: 60, max_budget_usd: 0.1 },
     };
+  }
+
+  #mcpUrl(): string {
+    return this.#options.misbehave.foreignMcpUrl
+      ? "https://mcp.elsewhere.example/mcp"
+      : `${this.#options.origin}${MCP_PATH}`;
   }
 
   /** The task if it belongs to the device's user; `shareAll` is the cross-device misbehaviour. */
@@ -212,18 +262,22 @@ export class FakeState {
 
   /** Leases the oldest claimable task of the device's user, or returns undefined. */
   claim(device: Device): Reply | undefined {
+    const anyUser = this.#options.misbehave.claimAnyUser === true;
     const task = [...this.#tasks.values()].find(
-      (t) => t.userId === device.userId && this.status(t) === "queued",
+      (t) => (anyUser || t.userId === device.userId) && this.status(t) === "queued",
     );
     if (!task) return undefined;
     task.attempts += 1;
     task.lease = { id: this.#id("lse"), expiresAt: 0, durationS: task.leaseS };
+    // Each lease gets its own MCP token, so a token never outlives the lease it was issued for.
+    const mcp = { ...(task.payload.mcp as object), token: this.#secret("mcp") };
+    task.payload = { ...task.payload, mcp };
     return ok({ task: task.payload, lease: this.#renew(task.lease), attempt: task.attempts });
   }
 
   #renew(lease: Lease): Record<string, unknown> {
     lease.expiresAt = this.#now + lease.durationS * 1000;
-    return { id: lease.id, expires_at: iso(lease.expiresAt), duration_s: lease.durationS };
+    return leaseBody(lease);
   }
 
   status(task: Task): string {
@@ -246,7 +300,9 @@ export class FakeState {
     const blocked = this.#checkReport(task, leaseId);
     if (blocked) return blocked;
     if (task.finished) return errorReply(409, "invalid_state", `The task is ${task.finished}.`);
-    return ok({ status: "leased", lease: this.#renew(task.lease as Lease) });
+    const lease = task.lease as Lease;
+    if (this.#options.misbehave.noRenew) return ok({ status: "leased", lease: leaseBody(lease) });
+    return ok({ status: "leased", lease: this.#renew(lease) });
   }
 
   finish(task: Task, leaseId: string, kind: FinishKind): Reply {
@@ -265,7 +321,7 @@ export class FakeState {
       return errorReply(409, "lease_lost", "The lease is no longer current.");
     }
     if (!task.cancelled) return undefined;
-    if (this.#options.rejectReportOnCancelled) {
+    if (this.#options.misbehave.rejectReportOnCancelled) {
       return errorReply(409, "invalid_state", "The task is cancelled.");
     }
     return ok({ status: "cancelled" });
@@ -282,11 +338,21 @@ export class FakeState {
   }
 }
 
+export const MCP_PATH = "/mcp";
+
+const leaseBody = (lease: Lease) => ({
+  id: lease.id,
+  expires_at: iso(lease.expiresAt),
+  duration_s: lease.durationS,
+});
+
 function pollBody(state: PairingState): Record<string, unknown> {
+  if (state === "spent") return { status: "expired" };
   if (typeof state === "string") return { status: state };
   return {
     status: "approved",
     device: { id: state.id, name: state.name },
+    account: { name: state.accountName },
     credential: state.credential,
   };
 }
