@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/farzai/tether/main/schemas/v1/task-events.response.json",
+  "title": "Task events response",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["status", "lease"],
+      "properties": {
+        "status": {
+          "const": "leased"
+        },
+        "lease": {
+          "$ref": "common.json#/$defs/lease"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": {
+          "const": "cancelled"
+        }
+      }
+    }
+  ]
+}

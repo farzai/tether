@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/farzai/tether/main/schemas/v1/heartbeat.request.json",
+  "title": "Heartbeat request",
+  "type": "object",
+  "required": ["client", "adapters", "capacity", "tasks"],
+  "properties": {
+    "client": {
+      "$ref": "common.json#/$defs/client"
+    },
+    "adapters": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "capacity": {
+      "type": "object",
+      "required": ["max", "available"],
+      "properties": {
+        "max": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "available": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "tasks": {
+      "type": "array",
+      "items": {
+        "$ref": "common.json#/$defs/id"
+      },
+      "uniqueItems": true
+    }
+  }
+}

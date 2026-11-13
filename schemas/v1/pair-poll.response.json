@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/farzai/tether/main/schemas/v1/pair-poll.response.json",
+  "title": "Pair poll response",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": {
+          "enum": ["pending", "denied", "expired"]
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": ["status", "device", "account", "credential"],
+      "properties": {
+        "status": {
+          "const": "approved"
+        },
+        "device": {
+          "type": "object",
+          "required": ["id", "name"],
+          "properties": {
+            "id": {
+              "$ref": "common.json#/$defs/id"
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "account": {
+          "type": "object",
+          "required": ["name"],
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200,
+              "description": "Display name of the account that approved the device."
+            }
+          }
+        },
+        "credential": {
+          "$ref": "common.json#/$defs/secret"
+        }
+      }
+    }
+  ]
+}

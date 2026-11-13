@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/farzai/tether/main/schemas/v1/task-fail.request.json",
+  "title": "Task fail request",
+  "type": "object",
+  "required": ["lease_id", "reason"],
+  "properties": {
+    "lease_id": {
+      "$ref": "common.json#/$defs/id"
+    },
+    "reason": {
+      "enum": ["agent_error", "timeout", "cancelled_by_user", "budget", "policy"]
+    },
+    "message": {
+      "type": "string",
+      "maxLength": 2000
+    },
+    "duration_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "usage": {
+      "$ref": "common.json#/$defs/usage"
+    }
+  }
+}

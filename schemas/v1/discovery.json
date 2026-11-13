@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/farzai/tether/main/schemas/v1/discovery.json",
+  "title": "Discovery document",
+  "type": "object",
+  "required": ["protocol", "app", "endpoints"],
+  "properties": {
+    "protocol": {
+      "const": "tether/1"
+    },
+    "app": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "icon": {
+          "$ref": "common.json#/$defs/app_url"
+        },
+        "url": {
+          "$ref": "common.json#/$defs/app_url"
+        }
+      }
+    },
+    "endpoints": {
+      "type": "object",
+      "required": [
+        "pair_start",
+        "pair_poll",
+        "heartbeat",
+        "claim",
+        "task",
+        "task_events",
+        "task_complete",
+        "task_fail",
+        "revoke",
+        "mcp"
+      ],
+      "properties": {
+        "pair_start": {
+          "$ref": "#/$defs/endpoint"
+        },
+        "pair_poll": {
+          "$ref": "#/$defs/endpoint"
+        },
+        "heartbeat": {
+          "$ref": "#/$defs/endpoint"
+        },
+        "claim": {
+          "$ref": "#/$defs/endpoint"
+        },
+        "task": {
+          "$ref": "#/$defs/endpoint"
+        },
+        "task_events": {
+          "$ref": "#/$defs/endpoint"
+        },
+        "task_complete": {
+          "$ref": "#/$defs/endpoint"
+        },
+        "task_fail": {
+          "$ref": "#/$defs/endpoint"
+        },
+        "revoke": {
+          "$ref": "#/$defs/endpoint"
+        },
+        "mcp": {
+          "$ref": "#/$defs/endpoint"
+        }
+      }
+    },
+    "conformance": {
+      "type": "object",
+      "required": ["pair_approve", "pair_deny", "enqueue", "cancel"],
+      "properties": {
+        "pair_approve": {
+          "$ref": "#/$defs/endpoint"
+        },
+        "pair_deny": {
+          "$ref": "#/$defs/endpoint"
+        },
+        "enqueue": {
+          "$ref": "#/$defs/endpoint"
+        },
+        "cancel": {
+          "$ref": "#/$defs/endpoint"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "endpoint": {
+      "description": "An absolute path on the app's origin (not starting with // or /\\), or an absolute HTTPS URL. Clients also require the URL to be on the discovery document's origin.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "pattern": "^(/(?![/\\\\])|https://)"
+    }
+  }
+}

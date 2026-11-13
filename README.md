@@ -9,7 +9,10 @@ npx @farzai/tether connect https://paper.farzai.com
 npx @farzai/tether start
 ```
 
-Status: design stage. See [docs/spec.md](docs/spec.md).
+Status: design stage. See [docs/spec.md](docs/spec.md) for the product spec and
+[docs/protocol.md](docs/protocol.md) for Tether Protocol v1, which app servers implement. An app
+server can check itself with the conformance suite: `bun run conformance <app-url>` from a checkout
+of this repository (see the protocol's "Conformance testing" section).
 
 ## License
 

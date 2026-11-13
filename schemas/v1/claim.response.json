@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/farzai/tether/main/schemas/v1/claim.response.json",
+  "title": "Claim response",
+  "type": "object",
+  "required": ["task", "lease", "attempt"],
+  "properties": {
+    "task": {
+      "$ref": "task.json"
+    },
+    "lease": {
+      "$ref": "common.json#/$defs/lease"
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 1
+    }
+  }
+}

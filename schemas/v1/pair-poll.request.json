@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/farzai/tether/main/schemas/v1/pair-poll.request.json",
+  "title": "Pair poll request",
+  "type": "object",
+  "required": ["device_code"],
+  "properties": {
+    "device_code": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

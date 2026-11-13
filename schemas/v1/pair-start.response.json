@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/farzai/tether/main/schemas/v1/pair-start.response.json",
+  "title": "Pair start response",
+  "type": "object",
+  "required": ["device_code", "user_code", "verification_uri", "interval", "expires_in"],
+  "properties": {
+    "device_code": {
+      "$ref": "common.json#/$defs/secret"
+    },
+    "user_code": {
+      "description": "Eight characters from the alphabet BCDFGHJKLMNPQRSTVWXZ in two groups of four (about 34 bits).",
+      "type": "string",
+      "pattern": "^[BCDFGHJKLMNPQRSTVWXZ]{4}-[BCDFGHJKLMNPQRSTVWXZ]{4}$"
+    },
+    "verification_uri": {
+      "$ref": "common.json#/$defs/app_url"
+    },
+    "verification_uri_complete": {
+      "$ref": "common.json#/$defs/app_url"
+    },
+    "interval": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "expires_in": {
+      "type": "integer",
+      "minimum": 1
+    }
+  }
+}
