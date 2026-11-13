@@ -56,6 +56,8 @@ export interface Misbehaviour extends Omit<StateMisbehaviour, "claimAnyUser"> {
   shareTasks?: OwnedRoute[];
   /** Answer every claim at once instead of holding it, which section 7 allows. */
   noLongPoll?: boolean;
+  /** Advertise these `app.icon` / `app.url` values in discovery. */
+  appLinks?: { icon?: string; url?: string };
 }
 
 type Auth = "none" | "device" | "hook" | "hook+device";
@@ -279,7 +281,7 @@ function discovery(opts: FakeAppOptions): Record<string, unknown> {
   const pick = (keys: RouteKey[]) => Object.fromEntries(keys.map((k) => [k, PATHS[k]]));
   const doc: Record<string, unknown> = {
     protocol: "tether/1",
-    app: { name: "Fake App" },
+    app: { name: "Fake App", ...opts.misbehave.appLinks },
     endpoints: { ...pick(PROTOCOL_KEYS), mcp: MCP_PATH },
   };
   if (opts.hookSecret !== undefined) doc.conformance = pick(HOOK_KEYS);

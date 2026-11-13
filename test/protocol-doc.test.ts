@@ -62,7 +62,8 @@ describe("docs/protocol.md examples", () => {
   it("gives the task token the lifetime the protocol gives it", () => {
     expect(protocolDoc).toContain("Lease expiry alone does not stop it");
     expect(specDoc).not.toMatch(/expires with the lease/);
-    expect(specDoc).toMatch(/valid while its lease is current/);
+    expect(specDoc).toMatch(/stops when another claim takes the task/);
+    expect(specDoc).toMatch(/lease expiry alone does not stop it/);
   });
 
   it("rejects a task without instructions", () => {
@@ -108,12 +109,11 @@ describe("schema limits on app-supplied values", () => {
     "/tether/v1/x\r",
     "/tether/v1/x\n",
     "https://app.example/x\n",
-  ])(
-    "refuses the endpoint %j",
-    (endpoint) => {
-      expect(validate("discovery", discovery(endpoint)).ok).toBe(false);
-    },
-  );
+    "/a\u2028\\b",
+    "https://x@app.example/x",
+  ])("refuses the endpoint %j", (endpoint) => {
+    expect(validate("discovery", discovery(endpoint)).ok).toBe(false);
+  });
 
   const task = (patch: Record<string, unknown>) => ({
     id: "tsk_1",
@@ -135,7 +135,10 @@ describe("schema limits on app-supplied values", () => {
   );
 
   it("refuses an MCP URL with userinfo", () => {
-    const mcp = { url: "https://app.example@evil.example/mcp", token: "tok_0123456789abcdef0123456789" };
+    const mcp = {
+      url: "https://app.example@evil.example/mcp",
+      token: "tok_0123456789abcdef0123456789",
+    };
     expect(validate("task", task({ mcp })).ok).toBe(false);
   });
 
@@ -149,7 +152,11 @@ describe("schema limits on app-supplied values", () => {
   });
 
   it("accepts app links with an @ in the path or query", () => {
-    const app = { name: "App", icon: "https://app.example/@me/icon.png", url: "https://app.example/?u=a@b" };
+    const app = {
+      name: "App",
+      icon: "https://app.example/@me/icon.png",
+      url: "https://app.example/?u=a@b",
+    };
     expect(validate("discovery", { ...discovery("/tether/v1/x"), app })).toEqual({ ok: true });
   });
 

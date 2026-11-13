@@ -27,7 +27,7 @@ export interface Context {
   pairing?: { deviceCode: string; userCode: string; intervalS: number };
   device?: string;
   deviceB?: string;
-  claimed?: { taskId: string; lease: Lease; mcpUrl: string };
+  claimed?: { taskId: string; lease: Lease };
   completed?: boolean;
 }
 
@@ -123,10 +123,20 @@ async function claim(ctx: Context): Promise<Claimed> {
     const waitS = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
     const reply = await claimCall(ctx, waitS);
     if (reply.status !== 204 || Date.now() >= deadline) {
-      return expectBody<Claimed>(reply, 200, "claim.response");
+      return expectMcpUrl(ctx, expectBody<Claimed>(reply, 200, "claim.response"));
     }
     await sleep(50);
   }
+}
+
+/** Section 6: every claimed task's `mcp.url` is the discovery `mcp` endpoint, on every claim. */
+function expectMcpUrl(ctx: Context, claimed: Claimed): Claimed {
+  const expected = ctx.http.url("mcp").href;
+  expectThat(
+    claimed.task.mcp.url === expected,
+    `claimed task ${claimed.task.id} (attempt ${claimed.attempt}): mcp.url is not the discovery mcp endpoint ${expected}`,
+  );
+  return claimed;
 }
 
 async function enqueueAndClaim(ctx: Context, leaseS?: number): Promise<Claimed> {
@@ -199,6 +209,10 @@ const discoveryChecks: Check[] = [
         const resolved = new URL(value, ctx.http.origin);
         expectThat(resolved.origin === ctx.http.origin, `endpoint ${key} is on another origin`);
         expectSafeUrl(ctx, `endpoint ${key}`, resolved.href);
+      }
+      for (const key of ["icon", "url"] as const) {
+        const link = doc.app[key];
+        if (link !== undefined) expectSafeUrl(ctx, `app.${key}`, link);
       }
       ctx.http.discovery = doc;
     },
@@ -399,7 +413,7 @@ const lifecycleChecks: Check[] = [
     },
   },
   {
-    name: "claim long-polls until a task arrives",
+    name: "claim returns a task enqueued while it waits",
     needs: ["device", "hooks"],
     async run(ctx) {
       const started = Date.now();
@@ -413,18 +427,7 @@ const lifecycleChecks: Check[] = [
         Date.now() - started < (LONG_POLL_S - 1) * 1000,
         "claim did not answer when the task arrived",
       );
-      ctx.claimed = { taskId, lease: claimed.lease, mcpUrl: claimed.task.mcp.url };
-    },
-  },
-  {
-    name: "a claimed task's MCP URL is the discovery mcp endpoint",
-    needs: ["claimed"],
-    async run(ctx) {
-      const expected = ctx.http.url("mcp").href;
-      expectThat(
-        ctx.claimed?.mcpUrl === expected,
-        `task mcp.url is not the discovery mcp endpoint ${expected}`,
-      );
+      ctx.claimed = { taskId, lease: claimed.lease };
     },
   },
   {

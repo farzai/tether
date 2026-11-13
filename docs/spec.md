@@ -70,7 +70,7 @@ discovery, so the protocol can change without breaking older clients.
   "instructions": "markdown: what to do, written by the app",
   "skill": { "name": "paper", "version": "3", "markdown": "…" },
   "input": { "…": "…" },
-  "mcp": { "url": "https://paper.farzai.com/mcp", "token": "task-scoped, expires with the lease" },
+  "mcp": { "url": "https://paper.farzai.com/mcp", "token": "task-scoped, one per claim" },
   "tools": { "requested": ["WebSearch", "WebFetch"] },
   "limits": { "timeout_s": 900, "max_budget_usd": 1.0 }
 }
@@ -78,7 +78,9 @@ discovery, so the protocol can change without breaking older clients.
 
 ### Security model
 - The device credential only lets Tether claim and report tasks. Results are written through the
-  app's MCP with a **task-scoped token** that expires with the lease and only touches that task.
+  app's MCP with a **task-scoped token** that only touches that task. Each claim issues a fresh one,
+  and it stops when another claim takes the task, when the task is completed, failed or cancelled,
+  or when the device is revoked; lease expiry alone does not stop it (protocol section 6).
 - **Local policy beats the app.** The app *requests* tools; Tether grants only the intersection with
   the user's local allow-list. Defaults: allow `WebSearch`, `WebFetch` and the app's MCP tools; deny
   `Bash`, every other MCP server, and every file read or write outside the task's temp directory.
