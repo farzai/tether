@@ -161,8 +161,8 @@ Response `200` with [`schemas/v1/pair-start.response.json`](../schemas/v1/pair-s
 - `verification_uri` is the app's pairing page. `verification_uri_complete` is optional: the same
   page with the user code filled in, which the client MAY open in the browser or show as a QR code.
   Both MUST be HTTPS URLs (plain HTTP only to a loopback host, while the app itself runs on
-  loopback), and neither may carry userinfo or a `%` in its authority. A client MUST NOT open or show any other kind of URI
-  (see [Security](#15-security)).
+  loopback), and neither may carry userinfo or a `%` in its authority. A client MUST NOT open or
+  show any other kind of URI (see [Security](#15-security)).
 - `interval` is the minimum number of seconds between polls; `expires_in` is how long the codes live.
 
 ### Pairing security
