@@ -64,8 +64,7 @@ export class Http {
 }
 
 function describeError(error: unknown): string {
-  const cause = (error as { cause?: { code?: string } }).cause;
-  return cause?.code ?? (error instanceof Error ? error.message : String(error));
+  return String((error as { cause?: unknown }).cause ?? error);
 }
 
 function parseJson(text: string): unknown {

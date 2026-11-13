@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { describe, expect, it } from "vitest";
+import { main, USAGE } from "../src/conformance/command.ts";
 import { type CheckResult, runConformance } from "../src/conformance/runner.ts";
 import { type FakeAppOptions, type RouteKey, startFakeApp } from "./fake-app/server.ts";
 
@@ -17,6 +18,9 @@ async function withFake<T>(
     await app.close();
   }
 }
+
+/** A URL where nothing listens: a fake app's address after it closed. */
+const closedUrl = () => withFake({}, async (app) => app.url);
 
 const runAgainst = (options: Partial<FakeAppOptions>, hookSecret: string | undefined = SECRET) =>
   withFake({ hookSecret: SECRET, ...options }, async (app) => ({
@@ -109,13 +113,66 @@ describe.concurrent("conformance suite without hooks", () => {
   });
 });
 
-describe.concurrent("conformance CLI", () => {
-  // Async on purpose: the fake app runs in this process, so a blocking spawn would deadlock.
-  const cli = (args: string[], env: Record<string, string> = {}) =>
+describe.concurrent("conformance command", () => {
+  const run = async (args: string[], env: Record<string, string> = {}) => {
+    let stdout = "";
+    let stderr = "";
+    const status = await main(
+      args,
+      env,
+      { write: (text: string) => (stdout += text) },
+      { write: (text: string) => (stderr += text) },
+    );
+    return { status, stdout, stderr };
+  };
+  const withHooks = <T>(options: Partial<FakeAppOptions>, fn: (url: string) => Promise<T>) =>
+    withFake({ hookSecret: SECRET, ...options }, (app) => fn(app.url));
+
+  it("exits 0 when every check passes, with the secret from the environment", async () => {
+    const result = await withHooks({}, (url) => run([url], { TETHER_CONFORMANCE_SECRET: SECRET }));
+    expect(result.stdout).toContain("28 passed, 0 failed, 0 skipped");
+    expect(result.status).toBe(0);
+  });
+
+  it("exits 1 when a check fails, with the secret from the flag", async () => {
+    const result = await withHooks({ removeRoutes: ["heartbeat"] }, (url) =>
+      run([url, "--hook-secret", SECRET]),
+    );
+    expect(result.stdout).toMatch(/FAIL {2}heartbeat/);
+    expect(result.stdout).not.toContain("no conformance hook secret");
+    expect(result.status).toBe(1);
+  });
+
+  it("exits 1 when checks were skipped for want of a secret", async () => {
+    const result = await withHooks({}, (url) => run([url], { TETHER_CONFORMANCE_SECRET: "" }));
+    expect(result.stdout).toContain("no conformance hook secret");
+    expect(result.status).toBe(1);
+  });
+
+  it.each([
+    [[]],
+    [["not a url"]],
+    [["http://127.0.0.1:1", "--hook-secret"]],
+    [["--bogus"]],
+    [["http://a", "http://b"]],
+  ])("exits 2 on a usage error (%j)", async (args) => {
+    const result = await run(args);
+    expect(result.stderr).toBe(USAGE);
+    expect(result.stdout).toBe("");
+    expect(result.status).toBe(2);
+  });
+
+  it("reports a server it cannot reach", async () => {
+    const result = await run([await closedUrl(), "--hook-secret", SECRET]);
+    expect(result.stdout).toMatch(/GET \/\.well-known\/tether: could not reach the server \(\w+/);
+    expect(result.status).toBe(1);
+  });
+});
+
+describe.concurrent("conformance CLI entry point", () => {
+  const cli = (args: string[]) =>
     new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve) => {
-      const child = spawn("bun", ["src/conformance/cli.ts", ...args], {
-        env: { ...process.env, TETHER_CONFORMANCE_SECRET: "", ...env },
-      });
+      const child = spawn("bun", ["src/conformance/cli.ts", ...args]);
       let stdout = "";
       let stderr = "";
       child.stdout.on("data", (chunk) => {
@@ -126,39 +183,13 @@ describe.concurrent("conformance CLI", () => {
       });
       child.on("close", (status) => resolve({ status, stdout, stderr }));
     });
-  const withHooks = <T>(options: Partial<FakeAppOptions>, fn: (url: string) => Promise<T>) =>
-    withFake({ hookSecret: SECRET, ...options }, (app) => fn(app.url));
 
-  it("exits 0 when every check passes, with the secret from the environment", async () => {
-    const run = await withHooks({}, (url) => cli([url], { TETHER_CONFORMANCE_SECRET: SECRET }));
-    expect(run.stdout).toContain("0 failed, 0 skipped");
-    expect(run.status).toBe(0);
-  });
-
-  it("exits 1 when a check fails, with the secret from the flag", async () => {
-    const run = await withHooks({ removeRoutes: ["heartbeat"] }, (url) =>
-      cli([url, "--hook-secret", SECRET]),
-    );
-    expect(run.stdout).toMatch(/FAIL {2}heartbeat/);
-    expect(run.stdout).not.toContain("no conformance hook secret");
-    expect(run.status).toBe(1);
-  });
-
-  it.each([
-    [[]],
-    [["not a url"]],
-    [["http://127.0.0.1:1", "--hook-secret"]],
-    [["--bogus"]],
-    [["http://a", "http://b"]],
-  ])("exits 2 on a usage error (%j)", async (args) => {
-    const run = await cli(args);
-    expect(run.stderr).toContain("Usage: bun run conformance <base-url>");
-    expect(run.status).toBe(2);
-  });
-
-  it("exits 1 when the server cannot be reached", async () => {
-    const run = await cli(["http://127.0.0.1:9", "--hook-secret", SECRET]);
-    expect(run.stdout).toContain("could not reach");
-    expect(run.status).toBe(1);
+  it("sets the exit status from the command", async () => {
+    const usage = await cli([]);
+    expect(usage.stderr).toBe(USAGE);
+    expect(usage.status).toBe(2);
+    const unreachable = await cli([await closedUrl(), "--hook-secret", SECRET]);
+    expect(unreachable.stdout).toContain("could not reach");
+    expect(unreachable.status).toBe(1);
   });
 });

@@ -3,3 +3,4 @@ coverage/
 .metrics/
 .claude/settings.local.json
 *.log
+target/
