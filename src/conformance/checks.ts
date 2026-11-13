@@ -9,6 +9,7 @@ import {
   type Http,
   type Reply,
 } from "./http.ts";
+import { isAllowedUrl } from "./urls.ts";
 
 /** What a check needs from earlier checks; the runner skips the check when one is missing. */
 export type Need =
@@ -171,18 +172,9 @@ async function expectReport(reply: Promise<Reply>, schema: string, status: strin
   expectEqual(`${schema} status`, body.status, status);
 }
 
-function isLocalhost(url: URL): boolean {
-  return ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
-}
-
-/** HTTPS, or plain HTTP on loopback only when the app itself is on loopback. */
+/** HTTPS, or plain HTTP only when the app itself is on loopback. */
 function expectSafeUrl(ctx: Context, label: string, value: string) {
-  const url = new URL(value);
-  const loopbackApp = isLocalhost(new URL(ctx.http.origin));
-  expectThat(
-    url.protocol === "https:" || (loopbackApp && url.protocol === "http:" && isLocalhost(url)),
-    `${label} must be an HTTPS URL`,
-  );
+  expectThat(isAllowedUrl(ctx.http.origin, value), `${label} must be an HTTPS URL`);
 }
 
 /** Settles both, then reports the first failure, so no request is left running into later checks. */
