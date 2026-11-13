@@ -93,11 +93,11 @@
   },
   "$defs": {
     "endpoint": {
-      "description": "An absolute path on the app's origin (not starting with // or /\\), or an absolute HTTPS URL. Clients also require the URL to be on the discovery document's origin.",
+      "description": "An absolute path on the app's origin (starting with exactly one /), or an absolute HTTPS URL without userinfo. No tab, CR, LF or backslash anywhere. This is a first filter: the binding rule is that the resolved URL is on the discovery document's origin.",
       "type": "string",
       "minLength": 1,
       "maxLength": 2000,
-      "pattern": "^(/(?![/\\\\])|https://)"
+      "pattern": "^(?=[^\\t\\n\\r\\\\]*$)(/(?!/)|https://[^/?#@]*([/?#]|$))"
     }
   }
 }

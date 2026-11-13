@@ -8,6 +8,7 @@ export class CheckFailure extends Error {}
 
 export interface Discovery {
   protocol: string;
+  app: { name: string; icon?: string; url?: string };
   endpoints: Record<string, string>;
   conformance?: Record<string, string>;
 }
@@ -27,13 +28,17 @@ export interface RequestOptions {
   id?: string;
 }
 
+export type Fetch = typeof fetch;
+
 export class Http {
   readonly origin: string;
+  readonly #fetch: Fetch;
   #discovery?: Discovery;
   #endpoints: Record<string, string> = {};
 
-  constructor(baseUrl: URL) {
+  constructor(baseUrl: URL, fetchFn: Fetch = fetch) {
     this.origin = baseUrl.origin;
+    this.#fetch = fetchFn;
   }
 
   get discovery(): Discovery | undefined {
@@ -64,7 +69,7 @@ export class Http {
       headers["content-type"] = "application/json";
       init.body = JSON.stringify(options.body);
     }
-    const res = await fetch(url, init).catch((error: unknown) => {
+    const res = await this.#fetch(url, init).catch((error: unknown) => {
       throw new CheckFailure(`${label}: could not reach the server (${describeError(error)})`);
     });
     const text = await res.text().catch((error: unknown) => {

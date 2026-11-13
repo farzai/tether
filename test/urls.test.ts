@@ -19,6 +19,9 @@ describe("isAllowedUrl", () => {
     ["https://app.example", "javascript:alert(1)"],
     ["http://127.0.0.1:4000", "javascript:alert(1)"],
     ["http://127.0.0.1:4000", "file:///etc/passwd"],
+    ["http://127.0.0.1:4000", "http://app.example/pair"],
+    ["http://localhost:4000", "http://10.0.0.1/pair"],
+    ["http://[::1]:4000", "http://localhost.example/pair"],
   ])("refuses %s using %s", (origin, url) => {
     expect(isAllowedUrl(origin, url)).toBe(false);
   });

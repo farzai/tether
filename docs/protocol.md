@@ -77,13 +77,18 @@ connects an app and again on each start; it MUST NOT hard-code endpoint paths.
 
 - `protocol` is `tether/1`. A v1 client MUST refuse any other value.
 - `app.name` is shown to the user. `app.url` (the app's home page) and `app.icon` are optional and,
-  when present, MUST be HTTPS URLs (plain HTTP only on loopback, like the server itself). The client
-  only shows them; it never sends a credential to them.
+  when present, MUST be HTTPS URLs (plain HTTP only to a loopback host, and only while the server
+  itself runs on loopback). The client only shows them; it never sends a credential to them. The
+  conformance suite checks both under this rule, so an HTTPS app whose `icon` is
+  `http://127.0.0.1:9/x` fails.
 - Each endpoint is either an absolute path, resolved against the app's origin, or an absolute HTTPS
   URL on the **same origin** as the discovery document. A path starts with exactly one `/`: a value
-  starting with `//` or `/\` is refused by the schema, because URL parsers resolve it to another
-  host. A client MUST refuse an endpoint on another origin, so the device credential is never sent
-  to a third party.
+  starting with `//` is refused by the schema, because URL parsers resolve it to another host, and
+  so is any endpoint containing a tab, CR, LF or backslash (URL parsers drop the first three and
+  read a backslash as `/`), or an HTTPS URL with userinfo (`user@host`). The pattern is only a first
+  filter. **The binding rule is the origin check:** the client resolves each endpoint against the
+  app's origin and MUST refuse one whose resolved origin differs from the discovery document's, so
+  the device credential is never sent to a third party.
 - `mcp` is the URL of the app's MCP server, under the same rule: on the app's origin, so it is HTTPS
   unless the app itself runs on loopback. Every task's `mcp.url` MUST equal it (see
   [Tasks and leases](#6-tasks-and-leases)).
@@ -154,8 +159,9 @@ Response `200` with [`schemas/v1/pair-start.response.json`](../schemas/v1/pair-s
   type, and shown to the user with `verification_uri`.
 - `verification_uri` is the app's pairing page. `verification_uri_complete` is optional: the same
   page with the user code filled in, which the client MAY open in the browser or show as a QR code.
-  Both MUST be HTTPS URLs (plain HTTP only when the app itself runs on loopback). A client MUST NOT
-  open or show any other kind of URI.
+  Both MUST be HTTPS URLs (plain HTTP only to a loopback host, while the app itself runs on
+  loopback), and neither may carry userinfo. A client MUST NOT open or show any other kind of URI
+  (see [Security](#15-security)).
 - `interval` is the minimum number of seconds between polls; `expires_in` is how long the codes live.
 
 ### Pairing security
@@ -554,6 +560,9 @@ An error response has a 4xx or 5xx status and the body
   endpoints, new `stage` values, new error codes. Both sides ignore what they do not know
   ([Conventions](#1-conventions)), so older clients and servers keep working.
 - New enum values in a response field that clients must act on (such as `status`) are breaking.
+- A tighter schema rule that closes a security gap (for example refusing userinfo in URLs, or a
+  backslash in an endpoint) may land within `tether/1`. It only refuses values that a client could
+  not safely rely on; a server that follows this document's examples is not affected.
 - Anything breaking (removing or renaming a field, changing a type or meaning, making an optional
   field required, a new required request field) is a new major version, `tether/2`, with its schemas
   in `schemas/v2/`. The schemas of a published version never change incompatibly.
@@ -581,7 +590,10 @@ An error response has a 4xx or 5xx status and the body
 - **Same origin.** Endpoints, including `mcp`, stay on the discovery document's origin (see
   [Discovery](#2-discovery)), and a client refuses a task whose `mcp.url` is anything else.
 - **URLs the client opens.** Only HTTPS verification URIs (see [pair/start](#pairstart)); the client
-  never opens a `file:`, `javascript:` or other URI from an app.
+  never opens a `file:`, `javascript:` or other URI from an app. Next to a verification URI, the
+  client shows the user the host it parsed from the URL, not the raw string, so the user can see
+  which site they are about to sign in to. The schemas refuse userinfo in app URLs, because
+  `https://app.example@evil.example/pair` reads as `app.example` but opens `evil.example`.
 - **No secrets in logs.** Device credentials, device codes and task tokens never appear in logs,
   events, error messages or reports, on either side.
 - **Credential storage.** The client keeps the device credential in the OS keychain where

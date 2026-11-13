@@ -1,5 +1,5 @@
 import { CHECKS, type Check, type Context, type Need } from "./checks.ts";
-import { CheckFailure, Http } from "./http.ts";
+import { CheckFailure, type Fetch, Http } from "./http.ts";
 
 export type Outcome = "pass" | "fail" | "skip";
 
@@ -19,11 +19,16 @@ export interface ConformanceRun {
 export interface ConformanceOptions {
   baseUrl: string;
   hookSecret?: string;
+  /**
+   * Replaces the global fetch. The tests use it to reach a loopback fake app as if it were served
+   * over HTTPS, the only case where an app link can pass the schema yet break the URL rule.
+   */
+  fetch?: Fetch;
 }
 
 /** Runs every check in order against an app server and returns the results and a text report. */
 export async function runConformance(options: ConformanceOptions): Promise<ConformanceRun> {
-  const ctx: Context = { http: new Http(new URL(options.baseUrl)) };
+  const ctx: Context = { http: new Http(new URL(options.baseUrl), options.fetch) };
   if (options.hookSecret) ctx.hookSecret = options.hookSecret;
   const results: CheckResult[] = [];
   for (const check of CHECKS) results.push(await runCheck(check, ctx));

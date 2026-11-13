@@ -26,8 +26,8 @@ export interface StateOptions {
 export interface StateMisbehaviour {
   /** Answer reports on cancelled tasks with 409. */
   rejectReportOnCancelled?: boolean;
-  /** Hand out tasks whose MCP URL is not the discovery mcp endpoint. */
-  foreignMcpUrl?: boolean;
+  /** Hand out tasks whose MCP URL is not the discovery mcp endpoint, on every claim or on retries. */
+  foreignMcpUrl?: "always" | "onRetry";
   /** Answer events without moving the lease expiry. */
   noRenew?: boolean;
   /** Return the credential on every poll after approval. */
@@ -245,8 +245,8 @@ export class FakeState {
   }
 
   #mcpUrl(): string {
-    return this.#options.misbehave.foreignMcpUrl
-      ? "https://mcp.elsewhere.example/mcp"
+    return this.#options.misbehave.foreignMcpUrl === "always"
+      ? FOREIGN_MCP_URL
       : `${this.#options.origin}${MCP_PATH}`;
   }
 
@@ -270,7 +270,9 @@ export class FakeState {
     task.attempts += 1;
     task.lease = { id: this.#id("lse"), expiresAt: 0, durationS: task.leaseS };
     // Each lease gets its own MCP token, so a token never outlives the lease it was issued for.
-    const mcp = { ...(task.payload.mcp as object), token: this.#secret("mcp") };
+    const { url } = task.payload.mcp as { url: string };
+    const retry = this.#options.misbehave.foreignMcpUrl === "onRetry" && task.attempts > 1;
+    const mcp = { url: retry ? FOREIGN_MCP_URL : url, token: this.#secret("mcp") };
     task.payload = { ...task.payload, mcp };
     return ok({ task: task.payload, lease: this.#renew(task.lease), attempt: task.attempts });
   }
@@ -339,6 +341,7 @@ export class FakeState {
 }
 
 export const MCP_PATH = "/mcp";
+const FOREIGN_MCP_URL = "https://mcp.elsewhere.example/mcp";
 
 const leaseBody = (lease: Lease) => ({
   id: lease.id,

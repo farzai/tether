@@ -59,6 +59,13 @@ describe("docs/protocol.md examples", () => {
     expect(validate("task", task)).toEqual({ ok: true });
   });
 
+  it("gives the task token the lifetime the protocol gives it", () => {
+    expect(protocolDoc).toContain("Lease expiry alone does not stop it");
+    expect(specDoc).not.toMatch(/expires with the lease/);
+    expect(specDoc).toMatch(/stops when another claim takes the task/);
+    expect(specDoc).toMatch(/lease expiry alone does not stop it/);
+  });
+
   it("rejects a task without instructions", () => {
     const result = validate("task", { id: "t", type: "x", title: "y" });
     expect(result.ok).toBe(false);
@@ -89,12 +96,24 @@ describe("schema limits on app-supplied values", () => {
     expect(validate("discovery", discovery(endpoint))).toEqual({ ok: true });
   });
 
-  it.each(["//evil.example/x", "/\\evil.example/x", "http://app.example/x", "javascript:alert(1)"])(
-    "refuses the endpoint %s",
-    (endpoint) => {
-      expect(validate("discovery", discovery(endpoint)).ok).toBe(false);
-    },
-  );
+  it.each([
+    "//evil.example/x",
+    "/\\evil.example/x",
+    "http://app.example/x",
+    "javascript:alert(1)",
+    "/tether\\v1/x",
+    "/tether/v1/x\\",
+    "https://app.example\\@evil.example/x",
+    "/\t/evil.example/x",
+    "/tether/v1/\tx",
+    "/tether/v1/x\r",
+    "/tether/v1/x\n",
+    "https://app.example/x\n",
+    "/a\u2028\\b",
+    "https://x@app.example/x",
+  ])("refuses the endpoint %j", (endpoint) => {
+    expect(validate("discovery", discovery(endpoint)).ok).toBe(false);
+  });
 
   const task = (patch: Record<string, unknown>) => ({
     id: "tsk_1",
@@ -114,6 +133,32 @@ describe("schema limits on app-supplied values", () => {
       expect(validate("task", task({ mcp })).ok).toBe(false);
     },
   );
+
+  it("refuses an MCP URL with userinfo", () => {
+    const mcp = {
+      url: "https://app.example@evil.example/mcp",
+      token: "tok_0123456789abcdef0123456789",
+    };
+    expect(validate("task", task({ mcp })).ok).toBe(false);
+  });
+
+  it.each([
+    { icon: "https://app.example@evil.example/icon.png" },
+    { url: "https://app.example:pw@evil.example/" },
+    { url: "https://@evil.example/" },
+  ])("refuses the app links %j", (links) => {
+    const doc = { ...discovery("/tether/v1/x"), app: { name: "App", ...links } };
+    expect(validate("discovery", doc).ok).toBe(false);
+  });
+
+  it("accepts app links with an @ in the path or query", () => {
+    const app = {
+      name: "App",
+      icon: "https://app.example/@me/icon.png",
+      url: "https://app.example/?u=a@b",
+    };
+    expect(validate("discovery", { ...discovery("/tether/v1/x"), app })).toEqual({ ok: true });
+  });
 
   it("accepts a loopback MCP URL for development", () => {
     const mcp = { url: "http://127.0.0.1:4000/mcp", token: "tok_0123456789abcdef0123456789" };
@@ -140,6 +185,8 @@ describe("schema limits on app-supplied values", () => {
     { verification_uri: "javascript:alert(1)" },
     { verification_uri: "file:///Applications/Calculator.app" },
     { verification_uri_complete: "http://app.example/pair?code=KQTM-WXPD" },
+    { verification_uri: "https://app.example@evil.example/pair" },
+    { verification_uri_complete: "https://app.example@evil.example/pair?code=KQTM-WXPD" },
     { user_code: "AB12" },
     { user_code: "KQ7M-3XPD" },
     { device_code: "dc_0000000000000001" },
