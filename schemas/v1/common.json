@@ -12,11 +12,11 @@
       "maxLength": 1000
     },
     "app_url": {
-      "description": "An absolute HTTPS URL without userinfo, or plain HTTP on a loopback host (development and tests only).",
+      "description": "An absolute HTTPS URL without userinfo or a percent sign in the authority, or plain HTTP on a loopback host (development and tests only).",
       "type": "string",
       "format": "uri",
       "maxLength": 2000,
-      "pattern": "^(https://[^/?#@]*([/?#]|$)|http://(localhost|127\\.0\\.0\\.1|\\[::1\\])(:[0-9]+)?(/|$))"
+      "pattern": "^(https://[^/?#@%]*([/?#]|$)|http://(localhost|127\\.0\\.0\\.1|\\[::1\\])(:[0-9]+)?(/|$))"
     },
     "client": {
       "type": "object",

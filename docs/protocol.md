@@ -78,17 +78,18 @@ connects an app and again on each start; it MUST NOT hard-code endpoint paths.
 - `protocol` is `tether/1`. A v1 client MUST refuse any other value.
 - `app.name` is shown to the user. `app.url` (the app's home page) and `app.icon` are optional and,
   when present, MUST be HTTPS URLs (plain HTTP only to a loopback host, and only while the server
-  itself runs on loopback). The client only shows them; it never sends a credential to them. The
-  conformance suite checks both under this rule, so an HTTPS app whose `icon` is
-  `http://127.0.0.1:9/x` fails.
+  itself runs on loopback), without userinfo or a `%` in the authority. The client only shows them;
+  it never sends a credential to them. The conformance suite checks both under this rule, so an
+  HTTPS app whose `icon` is `http://127.0.0.1:9/x` fails.
 - Each endpoint is either an absolute path, resolved against the app's origin, or an absolute HTTPS
   URL on the **same origin** as the discovery document. A path starts with exactly one `/`: a value
   starting with `//` is refused by the schema, because URL parsers resolve it to another host, and
-  so is any endpoint containing a tab, CR, LF or backslash (URL parsers drop the first three and
-  read a backslash as `/`), or an HTTPS URL with userinfo (`user@host`). The pattern is only a first
-  filter. **The binding rule is the origin check:** the client resolves each endpoint against the
-  app's origin and MUST refuse one whose resolved origin differs from the discovery document's, so
-  the device credential is never sent to a third party.
+  so is any endpoint containing a control character (U+0000 to U+0020, or U+007F) or a backslash
+  (URL parsers drop tab, CR and LF and read a backslash as `/`), or an HTTPS URL with userinfo
+  (`user@host`) or a `%` in its authority (parsers decode `%40` in a host to `@`). The pattern is
+  only a first filter. **The binding rule is the origin check:** the client resolves each endpoint
+  against the app's origin and MUST refuse one that does not parse or whose resolved origin differs
+  from the discovery document's, so the device credential is never sent to a third party.
 - `mcp` is the URL of the app's MCP server, under the same rule: on the app's origin, so it is HTTPS
   unless the app itself runs on loopback. Every task's `mcp.url` MUST equal it (see
   [Tasks and leases](#6-tasks-and-leases)).
@@ -160,7 +161,7 @@ Response `200` with [`schemas/v1/pair-start.response.json`](../schemas/v1/pair-s
 - `verification_uri` is the app's pairing page. `verification_uri_complete` is optional: the same
   page with the user code filled in, which the client MAY open in the browser or show as a QR code.
   Both MUST be HTTPS URLs (plain HTTP only to a loopback host, while the app itself runs on
-  loopback), and neither may carry userinfo. A client MUST NOT open or show any other kind of URI
+  loopback), and neither may carry userinfo or a `%` in its authority. A client MUST NOT open or show any other kind of URI
   (see [Security](#15-security)).
 - `interval` is the minimum number of seconds between polls; `expires_in` is how long the codes live.
 
@@ -593,7 +594,10 @@ An error response has a 4xx or 5xx status and the body
   never opens a `file:`, `javascript:` or other URI from an app. Next to a verification URI, the
   client shows the user the host it parsed from the URL, not the raw string, so the user can see
   which site they are about to sign in to. The schemas refuse userinfo in app URLs, because
-  `https://app.example@evil.example/pair` reads as `app.example` but opens `evil.example`.
+  `https://app.example@evil.example/pair` reads as `app.example` but opens `evil.example`, and a
+  `%` in the authority, because `https://app.example%40evil.example/pair` hides the same trick
+  behind percent-encoding. A client treats an app URL it cannot parse as refused, never as an error
+  that stops it.
 - **No secrets in logs.** Device credentials, device codes and task tokens never appear in logs,
   events, error messages or reports, on either side.
 - **Credential storage.** The client keeps the device credential in the OS keychain where

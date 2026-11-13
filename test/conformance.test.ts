@@ -163,6 +163,14 @@ describe.concurrent("conformance suite against an HTTPS app", () => {
       expect(run.report).toContain("FAIL  discovery document");
     },
   );
+
+  it("fails one check, not the run, when an endpoint has a port WHATWG cannot parse", async () => {
+    const run = await runAsHttps({
+      misbehave: { endpoints: { revoke: `${HTTPS_ORIGIN}:99999/r` } },
+    });
+    expect(failures(run.results).map((r) => r.name)).toEqual(["discovery document"]);
+    expect(discoveryResult(run)?.message).toBe("endpoint revoke is not a valid URL");
+  });
 });
 
 describe.concurrent("conformance suite without hooks", () => {
