@@ -68,6 +68,8 @@ jobs:
           if ("$apps" -notmatch "No apps connected") { throw "apps" }
           & $tether doctor | Tee-Object -Variable doctor
           if ($LASTEXITCODE -ne 1 -or "$doctor" -notmatch "FAIL  Claude Code was not found") { throw "doctor" }
+          # doctor's exit status 1 is the expected one; do not let it end the step.
+          exit 0
       - name: Install and remove the service
         run: |
           $tether = (Resolve-Path "dist\tether-windows-x64.exe").Path
