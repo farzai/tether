@@ -246,7 +246,7 @@ async function pollOnce(
 // start
 
 async function start(ctx: Context, args: string[]): Promise<number> {
-  const concurrency = parseConcurrency(args);
+  const concurrency = parseCount(args, "concurrency", 1, 16);
   ctx.store.moveToKeychain();
   const records = ctx.store.apps();
   if (records.length === 0) throw new Error("No apps connected. Run: tether connect <app-url>");
@@ -276,18 +276,19 @@ async function start(ctx: Context, args: string[]): Promise<number> {
   return worker.run(records);
 }
 
-function parseConcurrency(args: string[]): number {
+/** The command's only option, `--<name> <n>`, a whole number from 1 to `max`; no positionals. */
+function parseCount(args: string[], name: string, fallback: number, max: number): number {
   try {
     const { values, positionals } = parseArgs({
       args,
       allowPositionals: true,
-      options: { concurrency: { type: "string" } },
+      options: { [name]: { type: "string" } },
     });
-    const n = Number(values.concurrency ?? "1");
-    if (positionals.length > 0 || !Number.isInteger(n) || n < 1 || n > 16) throw new Error();
+    const n = Number(values[name] ?? fallback);
+    if (positionals.length > 0 || !Number.isInteger(n) || n < 1 || n > max) throw new Error();
     return n;
   } catch {
-    throw new UsageError("--concurrency must be a whole number from 1 to 16.");
+    throw new UsageError(`--${name} must be a whole number from 1 to ${max}.`);
   }
 }
 
@@ -373,7 +374,7 @@ async function disconnect(ctx: Context, value: string): Promise<number> {
 // logs
 
 function logs(ctx: Context, args: string[]): number {
-  const entries = ctx.store.taskLog(parseLimit(args));
+  const entries = ctx.store.taskLog(parseCount(args, "limit", 20, 1000));
   if (entries.length === 0) ctx.out.line("No tasks have run yet.");
   for (const entry of entries) {
     const at = new Date(entry.at);
@@ -391,21 +392,6 @@ function logs(ctx: Context, args: string[]): number {
     );
   }
   return 0;
-}
-
-function parseLimit(args: string[]): number {
-  try {
-    const { values, positionals } = parseArgs({
-      args,
-      allowPositionals: true,
-      options: { limit: { type: "string" } },
-    });
-    const n = Number(values.limit ?? "20");
-    if (positionals.length > 0 || !Number.isInteger(n) || n < 1 || n > 1000) throw new Error();
-    return n;
-  } catch {
-    throw new UsageError("--limit must be a whole number from 1 to 1000.");
-  }
 }
 
 // service
