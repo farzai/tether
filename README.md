@@ -10,8 +10,10 @@ npx @farzai/tether start
 ```
 
 Status: early. From a checkout, `bun run tether <command>` runs the CLI: `connect <app-url>`,
-`start [--concurrency <n>]`, `status`, `apps` and `disconnect <app>`. It needs Claude Code
-(2.1.325 or later, signed in). See [docs/spec.md](docs/spec.md) for the product spec and
+`start [--concurrency <n>]`, `status`, `apps`, `disconnect <app>`, `logs`, `doctor` and
+`service install|uninstall|status`. It needs Claude Code (2.1.325 or later, signed in);
+`tether doctor` checks that. Single binaries are built by the release workflow but not published
+yet. See [docs/spec.md](docs/spec.md) for the product spec and
 [docs/protocol.md](docs/protocol.md) for Tether Protocol v1, which app servers implement. An app
 server can check itself with the conformance suite: `bun run conformance <app-url>` from a checkout
 of this repository (see the protocol's "Conformance testing" section).
@@ -42,8 +44,21 @@ address); add it only for apps you trust. `tether start` warns while your policy
 `Bash` or `PowerShell`. A task can spend up to one turn past its budget, since Claude Code checks
 the budget between turns.
 
-Device credentials are kept in `~/.tether/credentials.json`, readable only by you (keychain storage
-comes later).
+Device credentials go in the macOS keychain, or the Secret Service keyring on Linux (through
+`secret-tool`). Where there is none (Windows, or a Linux without an unlocked keyring) they stay in
+`~/.tether/credentials.json`, readable only by you. `TETHER_KEYCHAIN=off` keeps them in that file.
+
+## Running in the background
+
+`tether service install` runs `tether start` now and at every login: a launchd agent on macOS
+(output in `~/.tether/service.log`), a systemd user unit on Linux (`journalctl --user -u tether`),
+or a Task Scheduler task on Windows. The service gets your `PATH` and Tether's own variables, but
+not `ANTHROPIC_API_KEY`: sign Claude Code in with `claude auth login` for the service to use it.
+On Windows the task runs through a small `.cmd` wrapper, which can show a console window at login;
+closing it stops Tether until the next login. `tether logs` lists what each task did: app, type, duration, cost and how it ended.
+
+The binaries are not signed yet. On macOS, Gatekeeper blocks a downloaded binary the first time:
+open it once from Finder with Control-click and Open, or run `xattr -d com.apple.quarantine tether`.
 
 ## License
 

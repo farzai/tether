@@ -60,6 +60,12 @@ An expired login was recorded from Claude Code 2.1.325: it ends with an `assista
 the same shape, built from Claude Code's SDK message types (`SDKAssistantMessageError`,
 `SDKRateLimitEvent`), since those cannot be recorded on demand.
 
+`tether doctor` checks this table against the installed Claude Code: on the version above every
+flag passes; on any other, a flag missing from `claude --help` fails. `--append-system-prompt-file`
+is hidden from `claude --help` in 2.1.325, so on other versions the doctor only warns about it
+(`HIDDEN_FLAGS` in the adapter). Signed in or not comes from `claude auth status --json`
+(`loggedIn`).
+
 ## Known limits
 
 - On Windows a process the agent started can keep running after the agent exits: once the agent

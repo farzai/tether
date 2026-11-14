@@ -9,7 +9,9 @@ Guide for anyone (human or agent) changing this repository. The product spec is
 - Biome for lint and format, Vitest for tests (Vitest runs under Node, so code in `src/` and `test/`
   uses Node APIs and `fetch`, not Bun-only APIs).
 - Ajv (JSON Schema draft 2020-12) validates protocol messages against `schemas/`.
-- GitHub Actions runs lint, typecheck and test on every push to `main` and every pull request.
+- GitHub Actions runs lint, typecheck and test on Linux and macOS on every push to `main` and every
+  pull request; on macOS that includes a real launchd install (`TETHER_REAL_SERVICE=1`). The release
+  workflow (`workflow_dispatch`) builds the binaries and checksums as artifacts and publishes nothing.
 
 ## Commands
 
@@ -21,7 +23,7 @@ Guide for anyone (human or agent) changing this repository. The product spec is
 | `bun run test`                   | Vitest, once. `bun run coverage` adds a coverage report.           |
 | `bun run conformance <base-url>` | Run the protocol conformance suite against an app server.          |
 | `bun run fake-app [port]`        | Start the in-memory fake app server with its conformance hooks on. |
-| `bun run tether <command>`       | Run the CLI (`connect`, `start`, `status`, `apps`, `disconnect`).  |
+| `bun run tether <command>`       | Run the CLI (`connect`, `start`, `status`, `apps`, `disconnect`, `logs`, `doctor`, `service`). |
 
 ## Layout
 
@@ -31,7 +33,11 @@ Guide for anyone (human or agent) changing this repository. The product spec is
 - `src/conformance/`: the conformance suite and its CLI.
 - `src/client/`: the client: protocol HTTP client, local policy, store, the Claude Code adapter
   (`claude-code.ts`), one task's run (`run-task.ts`) and the claim and heartbeat loops (`worker.ts`).
-- `src/cli/`: the `tether` command.
+- `src/cli/`: the `tether` command, `doctor.ts` and the background service (`service.ts`).
+- `src/client/keychain.ts`: the OS keychain for device credentials; `store.ts` falls back to the
+  0600 file.
+- `src/protocol/schemas.ts` imports each schema: a compiled binary reads nothing from disk, so a
+  new schema file must be imported there too (a test fails until it is).
 - `test/fake-app/`: an in-memory app server that implements the protocol, for tests.
 - `test/fake-claude/`: a stand-in `claude` binary that replays the stream-json fixtures in
   `test/fixtures/claude-code/` (scrubbed: no session ids, request ids or home paths); no test calls
