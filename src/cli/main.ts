@@ -1,8 +1,7 @@
-import { execFile } from "node:child_process";
 import { hostname } from "node:os";
 import { parseArgs } from "node:util";
 import { AppClient, AppError, CLIENT, type Fetch, parseAppUrl } from "../client/app-client.ts";
-import { SECRET_ENV_NAMES } from "../client/claude-code.ts";
+import { claudeVersion, SECRET_ENV_NAMES } from "../client/claude-code.ts";
 import { type Keychain, systemKeychain } from "../client/keychain.ts";
 import { clean, Log, type Output, Secrets } from "../client/output.ts";
 import { policyWarnings } from "../client/policy.ts";
@@ -10,6 +9,7 @@ import { pause } from "../client/retry.ts";
 import { type AppRecord, defaultHome, instanceName, localDate, Store } from "../client/store.ts";
 import { Worker } from "../client/worker.ts";
 import { isAllowedUrl } from "../protocol/urls.ts";
+import { doctor } from "./doctor.ts";
 
 export const USAGE = `Usage: tether <command>
 
@@ -20,6 +20,8 @@ export const USAGE = `Usage: tether <command>
   status                Whether Tether is running, what it runs, and today's usage.
   apps                  The connected apps.
   disconnect <app>      Revoke this device at the app and forget it (app URL or name).
+  doctor                Check that Claude Code is installed, signed in and supports the flags
+                        Tether passes, and that each app is reachable and accepts this device.
   logs [--limit <n>]    The last tasks run (20 by default): when, app, type, id, duration, cost,
                         how it ended, and title.
 
@@ -65,7 +67,21 @@ const COMMANDS: Record<string, Command> = {
   },
   disconnect: (ctx, args) => disconnect(ctx, oneArg(args)),
   logs: (ctx, args) => logs(ctx, args),
+  doctor: (ctx, args) => {
+    noArgs(args);
+    return doctor({
+      store: ctx.store,
+      out: ctx.out,
+      fetch: ctx.fetch,
+      env: ctx.io.env,
+      agentCommand: agentCommandOf(ctx.io.env),
+    });
+  },
 };
+
+function agentCommandOf(env: Record<string, string | undefined>): string {
+  return env.TETHER_CLAUDE_PATH || "claude";
+}
 
 function noArgs(args: string[]): void {
   if (args.length > 0) throw new UsageError();
@@ -226,8 +242,11 @@ async function start(ctx: Context, args: string[]): Promise<number> {
     throw new Error(`Tether is already running (pid ${running.pid}).`);
   }
   for (const warning of policyWarnings(ctx.store.policy())) ctx.err.line(warning);
-  const agentCommand = ctx.io.env.TETHER_CLAUDE_PATH || "claude";
-  const agentVersion = await claudeVersion(agentCommand);
+  const agentCommand = agentCommandOf(ctx.io.env);
+  const agentVersion = await claudeVersion(agentCommand, ctx.io.env);
+  if (!agentVersion) {
+    throw new Error("Claude Code was not found. Install it and sign in, then run tether start.");
+  }
   const signal = ctx.io.signal ?? new AbortController().signal;
   const worker = new Worker({
     store: ctx.store,
@@ -257,21 +276,6 @@ function parseConcurrency(args: string[]): number {
   } catch {
     throw new UsageError("--concurrency must be a whole number from 1 to 16.");
   }
-}
-
-function claudeVersion(command: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile(command, ["--version"], { timeout: 15_000 }, (error, stdout) => {
-      const version = /\d+\.\d+\.\d+/.exec(String(stdout))?.[0];
-      if (error || !version) {
-        reject(
-          new Error("Claude Code was not found. Install it and sign in, then run tether start."),
-        );
-      } else {
-        resolve(version);
-      }
-    });
-  });
 }
 
 function isAlive(pid: number): boolean {

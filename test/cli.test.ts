@@ -1,5 +1,13 @@
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -668,6 +676,78 @@ function startBin(h: Harness) {
   });
   return { child, exit, stderr: () => err };
 }
+
+/** The fake claude under another name, which picks a broken installation (see claude.mjs). */
+function fakeClaudeAs(name: string): string {
+  const dir = mkdtempSync(join(tmpdir(), "tether-test-claude-"));
+  symlinkSync(FAKE_CLAUDE, join(dir, name));
+  return join(dir, name);
+}
+
+describe.concurrent("tether doctor", () => {
+  it("passes a signed-in Claude Code of the checked version and a reachable app", async () => {
+    const h = await paired();
+    h.out = "";
+    expect(await h.run(["doctor"])).toBe(0);
+    expect(h.out).toMatch(/^ok {4}Claude Code 2\.1\.325/m);
+    expect(h.out).toMatch(/^ok {4}Claude Code is signed in/m);
+    expect(h.out).toMatch(/^ok {4}Flags: .*2\.1\.325/m);
+    expect(h.out).toMatch(/^ok {4}Fake App .*accepts this device/m);
+    expect(h.out).not.toMatch(/^FAIL/m);
+    expect(h.sent.at(-1)?.path).toMatch(/\/tasks\//);
+    h.expectNoSecrets();
+  });
+
+  it("reports a missing agent CLI clearly and fails", async () => {
+    const h = await harness();
+    h.extraEnv.TETHER_CLAUDE_PATH = join(h.scratch, "no-such-claude");
+    expect(await h.run(["doctor"])).toBe(1);
+    expect(h.out).toMatch(/^FAIL {2}Claude Code was not found at .*no-such-claude\. Install it/m);
+    expect(h.out).not.toMatch(/signed in/);
+  });
+
+  it("reports a signed-out agent CLI clearly and fails", async () => {
+    const h = await harness();
+    h.extraEnv.TETHER_CLAUDE_PATH = fakeClaudeAs("claude-signed-out");
+    expect(await h.run(["doctor"])).toBe(1);
+    expect(h.out).toMatch(/^FAIL {2}Claude Code is not signed in\. Run: claude auth login/m);
+  });
+
+  it("fails a flag the installed version does not list, and only warns about a hidden one", async () => {
+    const h = await harness();
+    h.extraEnv.TETHER_CLAUDE_PATH = fakeClaudeAs("claude-old");
+    expect(await h.run(["doctor"])).toBe(1);
+    expect(h.out).toMatch(/^FAIL {2}Flags: --restricted is not in `claude --help` of 2\.0\.9/m);
+    expect(h.out).toMatch(
+      /^warn {2}Flags: --append-system-prompt-file is hidden from `claude --help`/m,
+    );
+    expect(h.out).not.toMatch(/--strict-mcp-config is not/);
+  });
+
+  it("tells the user to pair again when the app no longer accepts the device", async () => {
+    const h = await paired();
+    await fetch(`${h.app.url}/tether/v1/devices/revoke`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${h.credential()}` },
+    });
+    expect(await h.run(["doctor"])).toBe(1);
+    expect(h.out).toMatch(/^FAIL {2}Fake App .*Pair again: tether connect/m);
+    h.expectNoSecrets();
+  });
+
+  it("reports an app it cannot reach", async () => {
+    const h = await paired();
+    h.intercept["/.well-known/tether"] = () => new Response("down", { status: 503 });
+    expect(await h.run(["doctor"])).toBe(1);
+    expect(h.out).toMatch(/^FAIL {2}Fake App .*could not be reached/m);
+  });
+
+  it("says when no app is connected, without failing", async () => {
+    const h = await harness();
+    expect(await h.run(["doctor"])).toBe(0);
+    expect(h.out).toMatch(/^warn {2}No apps connected/m);
+  });
+});
 
 describe.concurrent("tether logs", () => {
   it("lists each finished task with app, type, duration, cost and how it ended", async () => {
