@@ -669,6 +669,65 @@ function startBin(h: Harness) {
   return { child, exit, stderr: () => err };
 }
 
+describe.concurrent("tether logs", () => {
+  it("lists each finished task with app, type, duration, cost and how it ended", async () => {
+    const h = await paired();
+    const done = h.enqueue({ type: "paper.summarise", title: "Summarise the notes" });
+    const failed = h.enqueue(
+      { type: "paper.big", limits: { timeout_s: 60, max_budget_usd: 0.5 } },
+      { fixture: "budget" },
+    );
+    const { exit, stop } = startTether(h);
+    await untilAsync(async () => (await h.status(done.id)).status === "completed");
+    await untilAsync(async () => (await h.status(failed.id)).status === "failed");
+    stop.abort();
+    await exit;
+    h.out = "";
+    expect(await h.run(["logs"])).toBe(0);
+    const lines = h.out.trim().split("\n");
+    const of = (id: string) => lines.find((line) => line.includes(id)) ?? "";
+    expect(of(done.id)).toMatch(
+      /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d {2}Fake App {2}paper\.summarise {2}\S+ {2}\d+\.\d s {2}\$\d+\.\d{4} {2}complete {2}Summarise the notes$/,
+    );
+    expect(of(failed.id)).toMatch(/paper\.big .*fail: budget/);
+    expect(statSync(join(h.home, "tasks.jsonl")).mode & 0o777).toBe(0o600);
+    h.expectNoSecrets();
+  });
+
+  it("logs a task left to the app on shutdown as left", async () => {
+    const h = await paired();
+    const task = h.enqueue({}, { hang: true });
+    const { exit, stop } = startTether(h);
+    await until(() => existsSync(task.record));
+    stop.abort();
+    await exit;
+    h.out = "";
+    expect(await h.run(["logs", "--limit", "1"])).toBe(0);
+    expect(h.out).toMatch(
+      new RegExp(`${task.id} {2}\\d+\\.\\d s {2}(\\$\\d+\\.\\d{4}|-) {2}left {2}`),
+    );
+  });
+
+  it("cleans what the app wrote before printing it", async () => {
+    const h = await paired();
+    const task = h.enqueue({ title: "evil\u001b[2Jtitle" });
+    const { exit, stop } = startTether(h);
+    await untilAsync(async () => (await h.status(task.id)).status === "completed");
+    stop.abort();
+    await exit;
+    h.out = "";
+    await h.run(["logs"]);
+    expect(h.out).not.toContain("\u001b");
+  });
+
+  it("says when there is nothing to show, and refuses a bad limit", async () => {
+    const h = await harness();
+    expect(await h.run(["logs"])).toBe(0);
+    expect(h.out).toContain("No tasks have run yet.");
+    expect(await h.run(["logs", "--limit", "0"])).toBe(2);
+  });
+});
+
 describe.concurrent("tether start, stopped by a signal", () => {
   it("stops on SIGHUP as on Ctrl-C: the agent is stopped and the lease is left to expire", async () => {
     const h = await paired();

@@ -1,5 +1,17 @@
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  chmodSync,
+  closeSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { type Keychain, KeychainUnavailable } from "./keychain.ts";
@@ -25,6 +37,43 @@ export interface RunState {
   startedAt: string;
   concurrency: number;
   tasks: { app: string; id: string; title: string; startedAt: string }[];
+}
+
+/** One finished task in tasks.jsonl. `title` and `type` come from the app: clean them to print. */
+export interface TaskLogEntry {
+  /** When it ended (ISO 8601). */
+  at: string;
+  app: string;
+  appName: string;
+  id: string;
+  type: string;
+  title: string;
+  durationMs: number;
+  /** What the agent reported spending, or null when it reported nothing. */
+  costUsd: number | null;
+  ended: string;
+}
+
+const TASK_LOG_KEEP = 1000;
+const TASK_LOG_TRIM_BYTES = 1_000_000;
+
+/** Whether the file's last byte is not a newline; false for a missing or empty file. */
+function endsTorn(file: string): boolean {
+  let fd: number;
+  try {
+    fd = openSync(file, "r");
+  } catch {
+    return false;
+  }
+  try {
+    const size = statSync(file).size;
+    if (size === 0) return false;
+    const last = Buffer.alloc(1);
+    readSync(fd, last, 0, 1, size - 1);
+    return last[0] !== 0x0a;
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /** The local date as YYYY-MM-DD: daily caps reset at the user's midnight. */
@@ -73,12 +122,16 @@ export class Store {
     }
   }
 
-  private write(name: string, value: unknown): void {
+  private makeHome(): void {
     // Only a home this call created is set to 0700: TETHER_HOME may point at a directory the user
     // owns for other things, such as their home directory, whose mode is theirs to keep.
     if (mkdirSync(this.home, { recursive: true, mode: 0o700 }) !== undefined) {
       chmodSync(this.home, 0o700);
     }
+  }
+
+  private write(name: string, value: unknown): void {
+    this.makeHome();
     const temp = this.path(`.${name}.${process.pid}.tmp`);
     writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
     chmodSync(temp, 0o600);
@@ -161,6 +214,41 @@ export class Store {
     };
     this.write("usage.json", next);
     return next;
+  }
+
+  /** Appends one finished task; past about 1 MB the log keeps its last 1000 tasks. */
+  logTask(entry: TaskLogEntry): void {
+    this.makeHome();
+    const file = this.path("tasks.jsonl");
+    // A crash mid-append leaves a line without its newline; start on a fresh line after it.
+    const torn = endsTorn(file) ? "\n" : "";
+    appendFileSync(file, `${torn}${JSON.stringify(entry)}\n`, { mode: 0o600 });
+    if (statSync(file).size > TASK_LOG_TRIM_BYTES) {
+      const kept = this.taskLog(TASK_LOG_KEEP).map((entry) => JSON.stringify(entry));
+      const temp = this.path(`.tasks.jsonl.${process.pid}.tmp`);
+      writeFileSync(temp, `${kept.join("\n")}\n`, { mode: 0o600 });
+      renameSync(temp, file);
+    }
+  }
+
+  /** The last `limit` finished tasks, oldest first; a line that does not parse is skipped. */
+  taskLog(limit: number): TaskLogEntry[] {
+    let text: string;
+    try {
+      text = readFileSync(this.path("tasks.jsonl"), "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+    const entries: TaskLogEntry[] = [];
+    for (const line of text.split("\n")) {
+      try {
+        if (line) entries.push(JSON.parse(line) as TaskLogEntry);
+      } catch {
+        // A line cut short by a crash mid-append.
+      }
+    }
+    return entries.slice(-limit);
   }
 
   runState(): RunState | undefined {

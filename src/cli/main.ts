@@ -20,6 +20,8 @@ export const USAGE = `Usage: tether <command>
   status                Whether Tether is running, what it runs, and today's usage.
   apps                  The connected apps.
   disconnect <app>      Revoke this device at the app and forget it (app URL or name).
+  logs [--limit <n>]    The last tasks run (20 by default): when, app, type, id, duration, cost,
+                        how it ended, and title.
 
 Files live in ~/.tether (or TETHER_HOME): credentials.json, policy.json, usage.json, tasks.jsonl.
 Device credentials go in the OS keychain where there is one (TETHER_KEYCHAIN=off keeps them
@@ -62,6 +64,7 @@ const COMMANDS: Record<string, Command> = {
     return apps(ctx);
   },
   disconnect: (ctx, args) => disconnect(ctx, oneArg(args)),
+  logs: (ctx, args) => logs(ctx, args),
 };
 
 function noArgs(args: string[]): void {
@@ -348,4 +351,42 @@ async function disconnect(ctx: Context, value: string): Promise<number> {
   ctx.store.removeApp(record.origin);
   ctx.out.line(`Disconnected ${record.name} (${record.origin}).`);
   return 0;
+}
+
+// logs
+
+function logs(ctx: Context, args: string[]): number {
+  const entries = ctx.store.taskLog(parseLimit(args));
+  if (entries.length === 0) ctx.out.line("No tasks have run yet.");
+  for (const entry of entries) {
+    const at = new Date(entry.at);
+    ctx.out.line(
+      [
+        `${localDate(at)} ${at.toTimeString().slice(0, 8)}`,
+        clean(entry.appName, 100),
+        clean(entry.type, 100),
+        clean(entry.id, 100),
+        `${(entry.durationMs / 1000).toFixed(1)} s`,
+        entry.costUsd === null ? "-" : `$${entry.costUsd.toFixed(4)}`,
+        entry.ended,
+        clean(entry.title, 200),
+      ].join("  "),
+    );
+  }
+  return 0;
+}
+
+function parseLimit(args: string[]): number {
+  try {
+    const { values, positionals } = parseArgs({
+      args,
+      allowPositionals: true,
+      options: { limit: { type: "string" } },
+    });
+    const n = Number(values.limit ?? "20");
+    if (positionals.length > 0 || !Number.isInteger(n) || n < 1 || n > 1000) throw new Error();
+    return n;
+  } catch {
+    throw new UsageError("--limit must be a whole number from 1 to 1000.");
+  }
 }

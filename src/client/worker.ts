@@ -273,6 +273,7 @@ export class Worker {
     this.#opts.store.addUsage(today, record.origin, { tasks: 1, usd: 0 });
     this.#reserved.set(record.origin, (this.#reserved.get(record.origin) ?? 0) + reservation);
     const key = `${record.origin} ${claim.task.id}`;
+    const startedAt = Date.now();
     const { control, done } = runTask(claim, {
       client,
       credential: record.credential,
@@ -284,10 +285,26 @@ export class Worker {
       agentCommand: this.#opts.agentCommand,
       env: this.#opts.env,
     });
+    const log = (costUsd: number | undefined, ended: string) =>
+      this.#opts.store.logTask({
+        at: new Date().toISOString(),
+        app: record.origin,
+        appName: client.app.name,
+        id: claim.task.id,
+        type: claim.task.type,
+        title: claim.task.title,
+        durationMs: Date.now() - startedAt,
+        costUsd: costUsd ?? null,
+        ended,
+      });
     const settled = done
-      .then((result) => (result.costUsd === undefined ? reservation : result.costUsd))
+      .then((result) => {
+        log(result.costUsd, result.ended);
+        return result.costUsd === undefined ? reservation : result.costUsd;
+      })
       .catch((error: unknown) => {
         this.#opts.log.line(`${record.name}  ${claim.task.id}  ${(error as Error).message}`);
+        log(undefined, "error");
         return reservation;
       })
       .then((spent) => {
