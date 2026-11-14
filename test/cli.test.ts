@@ -438,7 +438,17 @@ describe.concurrent("tether start", () => {
     await sleep(300);
     expect(h.out.match(/could not be written to the task log/g)).toHaveLength(2);
     expect(h.out).toMatch(new RegExp(`${first.id}  could not be written to the task log`));
-    expect(h.store().usage(localDate(new Date())).total.tasks).toBe(2);
+    const usage = h.store().usage(localDate(new Date())).total;
+    expect(usage.tasks).toBe(2);
+    // What the two tasks reported spending, not their reserved budgets.
+    let reported = 0;
+    for (const id of [first.id, second.id]) {
+      const complete = h.reports(id).find((s) => s.path.endsWith("/complete"));
+      reported +=
+        (complete?.body as { usage?: { cost_usd: number } } | undefined)?.usage?.cost_usd ?? 0;
+    }
+    expect(reported).toBeGreaterThan(0);
+    expect(usage.usd).toBeCloseTo(reported, 6);
   });
 
   it("cuts an oversized service log to its last lines when it starts", async () => {

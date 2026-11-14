@@ -81,12 +81,16 @@ describe("the service log", () => {
     expect(statSync(file).mode & 0o777).toBe(0o600);
   });
 
-  it("leaves a log under the limit, and a missing one, alone", () => {
+  it("leaves a log at or under the limit, and a missing one, alone", () => {
     const store = new Store(mkdtempSync(join(tmpdir(), "tether-store-")));
     store.trimServiceLog();
     const file = join(store.home, "service.log");
     writeFileSync(file, "started\n");
     store.trimServiceLog();
     expect(readFileSync(file, "utf8")).toBe("started\n");
+    const atLimit = `${"z".repeat(4_999_999)}\n`;
+    writeFileSync(file, atLimit);
+    store.trimServiceLog();
+    expect(statSync(file).size).toBe(5_000_000);
   });
 });
