@@ -7,7 +7,10 @@
 //   record    path where this process writes what it was given (argv, env names, cwd, files)
 //   delay_ms  pause before each line
 //   hang      after the last line, keep running until killed
+//   exit_code exit with this code instead of the one the result line implies
+//   grandchild  start a long-running child process first and record its pid
 // "$TOOLS" in a fixture's init line becomes the tools from --tools, "$CWD" the working directory.
+import { spawn } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,12 +30,17 @@ const stdin = readFileSync(0, "utf8");
 const json = stdin.slice(stdin.indexOf("{"), stdin.lastIndexOf("}") + 1);
 const fake = JSON.parse(json).fake ?? {};
 
+const grandchild = fake.grandchild
+  ? spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" })
+  : undefined;
+
 if (fake.record) {
   const read = (path) => (path ? readFileSync(path, "utf8") : undefined);
   writeFileSync(
     fake.record,
     JSON.stringify({
       pid: process.pid,
+      grandchildPid: grandchild?.pid,
       argv: args,
       env: Object.keys(process.env).sort(),
       cwd: process.cwd(),
@@ -62,5 +70,5 @@ for (const line of lines) {
 if (fake.hang) setInterval(() => {}, 1000);
 else {
   const result = lines.map((line) => JSON.parse(line)).find((msg) => msg.type === "result");
-  process.exitCode = result?.is_error ? 1 : 0;
+  process.exitCode = fake.exit_code ?? (result?.is_error ? 1 : 0);
 }

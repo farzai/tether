@@ -70,13 +70,13 @@ export function parseAppUrl(value: string): string {
 /** Resolves an endpoint against the origin; refuses one that does not parse or leaves the origin. */
 function onOrigin(origin: string, value: string): string {
   const url = URL.parse(value, origin);
-  if (!url || url.origin !== origin) {
+  if (url?.origin !== origin) {
     throw new AppError(
       "refused",
       "The app's discovery document names an endpoint on another site.",
     );
   }
-  return url.href;
+  return (url as URL).href;
 }
 
 function retryAfterMs(res: Response, body: unknown): number | undefined {

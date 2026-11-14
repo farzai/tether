@@ -48,6 +48,54 @@ describe("runClaudeCode", () => {
     expect(existsSync(seen.cwd)).toBe(false);
   });
 
+  it("disallows every built-in tool it did not grant", async () => {
+    const { seen } = await run({ fixture: "success" });
+    const disallowed = seen.argv[seen.argv.indexOf("--disallowedTools") + 1].split(",");
+    expect(disallowed).toContain("Bash");
+    expect(disallowed).toContain("Write");
+    expect(disallowed).not.toContain("WebSearch");
+  });
+
+  it("reads sparse lines: missing ids, fields and text count as nothing", async () => {
+    const { outcome, events } = await run({ fixture: "sparse" });
+    expect(outcome).toMatchObject({ kind: "success", summary: "Done." });
+    expect(outcome.usage).toEqual({
+      input_tokens: 0,
+      output_tokens: 3,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+    });
+    expect(events).toContainEqual({ stage: "tool", message: "tool" });
+    expect(events.filter((e) => e.stage === "message")).toEqual([]);
+  });
+
+  it("does not call a run a success when the result is flagged or the exit code is not 0", async () => {
+    expect((await run({ fixture: "success-flagged", exit_code: 0 })).outcome.kind).toBe("error");
+    expect((await run({ fixture: "success", exit_code: 3 })).outcome).toMatchObject({
+      kind: "error",
+      exitCode: 3,
+    });
+  });
+
+  it("kills the whole process group, so a process the agent started dies too", async () => {
+    const stop = new AbortController();
+    const done = run({ fixture: "hang", hang: true, grandchild: true }, FAKE_CLAUDE, stop.signal);
+    setTimeout(() => stop.abort(), 500);
+    const { seen } = await done;
+    const alive = (pid: number) => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    for (let i = 0; i < 40 && alive(seen.grandchildPid); i++) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(alive(seen.grandchildPid)).toBe(false);
+  });
+
   it("reports a session that ended in error as an agent error", async () => {
     const { outcome } = await run({ fixture: "error" });
     expect(outcome).toMatchObject({

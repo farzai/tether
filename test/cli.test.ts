@@ -2,7 +2,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, statSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { main } from "../src/cli/main.ts";
 import { Store } from "../src/client/store.ts";
 import { type FakeApp, type FakeAppOptions, startFakeApp } from "./fake-app/server.ts";
@@ -156,19 +156,15 @@ const alive = (pid: number) => {
   }
 };
 
-let harnesses: Harness[] = [];
-let stops: AbortController[] = [];
-
-afterEach(async () => {
-  for (const stop of stops) stop.abort();
-  for (const h of harnesses) await h.app.close();
-  harnesses = [];
-  stops = [];
+// Tests run concurrently, each with its own app and home; everything they start is stopped here.
+const cleanups: (() => Promise<unknown>)[] = [];
+afterAll(async () => {
+  await Promise.all(cleanups.map((cleanup) => cleanup()));
 });
 
 async function harness(options: Partial<FakeAppOptions> = {}): Promise<Harness> {
   const h = await new Harness().start(options);
-  harnesses.push(h);
+  cleanups.push(() => h.app.close());
   return h;
 }
 
@@ -181,12 +177,15 @@ async function paired(options: Partial<FakeAppOptions> = {}): Promise<Harness> {
 /** Starts `tether start` in the background; returns its exit promise and the stop switch. */
 function startTether(h: Harness, args: string[] = []) {
   const stop = new AbortController();
-  stops.push(stop);
   const exit = h.run(["start", ...args], stop.signal);
+  cleanups.push(() => {
+    stop.abort();
+    return exit;
+  });
   return { exit, stop };
 }
 
-describe("tether connect", () => {
+describe.concurrent("tether connect", () => {
   it("pairs, stores the credential readable only by the user, and names the account", async () => {
     const h = await paired();
     expect(h.out).toContain("127.0.0.1");
@@ -239,7 +238,7 @@ describe("tether connect", () => {
   });
 });
 
-describe("tether apps, status and disconnect", () => {
+describe.concurrent("tether apps, status and disconnect", () => {
   it("lists the connected app and today's usage", async () => {
     const h = await paired();
     h.out = "";
@@ -303,7 +302,7 @@ describe("tether apps, status and disconnect", () => {
   });
 });
 
-describe("tether start", () => {
+describe.concurrent("tether start", () => {
   it("claims a task, runs it in an isolated session and reports it complete with usage", async () => {
     const h = await paired();
     const task = h.enqueue({ tools: { requested: ["WebSearch"] } });
