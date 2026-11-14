@@ -499,8 +499,7 @@ function failure(
   usage: Usage,
   signals: ProviderSignals,
 ): Outcome {
-  const cause =
-    result.isError && result.apiError ? causeOf(signals.error, result.apiStatus) : undefined;
+  const cause = result.apiError ? causeOf(signals.error, result.apiStatus) : undefined;
   if (cause === undefined) {
     const message = `Claude Code exited with code ${exitCode} (${result.subtype})`;
     return { kind: "error", exitCode, message, usage };
@@ -581,11 +580,20 @@ class StreamParser {
     this.#lineSeen = true;
     if (msg === undefined) return;
     if (isInit) this.init(msg);
+    else this.message(msg);
+  }
+
+  /** Every line after the init line, by its type; other types are ignored. */
+  private message(msg: StreamMessage): void {
     if (msg.type === "result") this.#result = final(msg);
     if (msg.type === "assistant") this.assistant(msg);
-    if (msg.type === "rate_limit_event" && msg.rate_limit_info) {
-      this.#signals.resetAt = resetOf(msg.rate_limit_info) ?? this.#signals.resetAt;
-    }
+    if (msg.type === "rate_limit_event") this.rateLimit(msg.rate_limit_info);
+  }
+
+  /** A rejected limit's reset time is kept for the report; the latest one wins. */
+  private rateLimit(info: RateLimitInfo | undefined): void {
+    const reset = resetOf(info);
+    if (reset !== undefined) this.#signals.resetAt = reset;
   }
 
   private assistant(msg: StreamMessage): void {

@@ -25,40 +25,37 @@ function base64Forms(bytes: Buffer): string[] {
   return forms.flatMap((form) => [form, form.replace(/\+/g, "-").replace(/\//g, "_")]);
 }
 
-/** One percent-escaped byte, hex digits in either case. */
-function percentByte(byte: number): string {
-  const digits = byte.toString(16).padStart(2, "0");
-  return `%${[...digits].map((d) => (/[a-f]/.test(d) ? `[${d}${d.toUpperCase()}]` : d)).join("")}`;
+/** An encoded form is matched only from this length on. */
+const longEnough = (form: string) => form.length >= MIN_ENCODED_LENGTH;
+
+/** A percent-encoded form as a pattern that matches its hex digits in either case. */
+function percentPattern(form: string): string {
+  return form
+    .split(/(%[0-9A-F]{2})/)
+    .map((part) =>
+      part.startsWith("%")
+        ? `%${[...part.slice(1)].map((d) => (/[A-F]/.test(d) ? `[${d}${d.toLowerCase()}]` : d)).join("")}`
+        : escapeRegExp(part),
+    )
+    .join("");
 }
 
-/**
- * Percent-encoded forms as patterns: as `encodeURIComponent` writes it, and with every byte
- * escaped. Each only when its encoded text is long enough.
- */
-function percentPatterns(value: string, bytes: Buffer): string[] {
-  const patterns: string[] = [];
-  const component = encodeURIComponent(value);
-  if (component !== value && component.length >= MIN_ENCODED_LENGTH) {
-    const parts = component.split(/(%[0-9A-F]{2})/);
-    patterns.push(
-      parts
-        .map((part) =>
-          part.startsWith("%")
-            ? percentByte(Number.parseInt(part.slice(1), 16))
-            : escapeRegExp(part),
-        )
-        .join(""),
-    );
-  }
-  if (bytes.length * 3 >= MIN_ENCODED_LENGTH) patterns.push([...bytes].map(percentByte).join(""));
-  return patterns;
+/** Percent-encoded forms: as `encodeURIComponent` writes it, and with every byte escaped. */
+function percentForms(value: string, bytes: Buffer): string[] {
+  const everyByte = [...bytes].map(
+    (byte) => `%${byte.toString(16).padStart(2, "0").toUpperCase()}`,
+  );
+  return [encodeURIComponent(value), everyByte.join("")];
 }
 
 /** The patterns that match one secret: itself, and its encoded forms that are long enough. */
 function secretPatterns(value: string): string[] {
   const bytes = Buffer.from(value, "utf8");
-  const base64 = base64Forms(bytes).filter((form) => form.length >= MIN_ENCODED_LENGTH);
-  return [escapeRegExp(value), ...base64.map(escapeRegExp), ...percentPatterns(value, bytes)];
+  return [
+    escapeRegExp(value),
+    ...base64Forms(bytes).filter(longEnough).map(escapeRegExp),
+    ...percentForms(value, bytes).filter(longEnough).map(percentPattern),
+  ];
 }
 
 /**

@@ -147,7 +147,7 @@ describe("runClaudeCode", () => {
     expect(outcome).not.toHaveProperty("retryAt");
   });
 
-  it("takes the reset of the overage when the overage was the limit that was hit", async () => {
+  it("takes the reset of the overage when the overage was the limit that was hit, and keeps it past a later allowed event", async () => {
     const { outcome } = await run({ fixture: "overage-rejected" });
     expect(outcome).toMatchObject({ cause: "rate_limit", retryAt: "2026-11-14T16:00:00Z" });
   });
@@ -160,9 +160,21 @@ describe("runClaudeCode", () => {
     expect(overage).not.toHaveProperty("retryAt");
   });
 
+  it("does not blame a recovered API error for a later, unrelated failure", async () => {
+    const { outcome } = await run({ fixture: "recovered-then-error" });
+    expect(outcome).toMatchObject({ kind: "error", exitCode: 1 });
+    expect(outcome).not.toHaveProperty("cause");
+  });
+
+  it("takes the cause from the assistant error when the result gives no status", async () => {
+    const { outcome } = await run({ fixture: "api-error-no-status" });
+    expect(outcome).toMatchObject({ kind: "error", cause: "auth_failed" });
+  });
+
   it("keeps a session that recovered from an API error a success", async () => {
-    const { outcome } = await run({ fixture: "recovered" });
+    const { outcome } = await run({ fixture: "recovered", stderr: "a warning\n" });
     expect(outcome).toMatchObject({ kind: "success", summary: "OK" });
+    expect(outcome).not.toHaveProperty("detail");
   });
 
   it("does not wait for a pipe a leftover process holds, and keeps the last lines", async () => {

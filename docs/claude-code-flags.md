@@ -51,7 +51,7 @@ app.
 |---|---|
 | `result` success, not `is_error`, exit 0 | `complete` |
 | `result` subtype `error_max_budget_usd` | `fail`, reason `budget` |
-| Ended on an API error: `is_error` with `api_error_status` or `terminal_reason: "api_error"` | `fail`, reason `agent_error`, with a `cause`: the last assistant `error` (`authentication_failed` is `auth_failed`, `rate_limit` is `rate_limit`, `billing_error` is `billing`, `server_error` is `provider_error`), else the status (401 or 403 `auth_failed`, 402 `billing`, 429 `rate_limit`, 5xx `provider_error`) |
+| Ended on an API error: the result has `api_error_status` or `terminal_reason: "api_error"` | `fail`, reason `agent_error`, with a `cause`: the last assistant `error` (`authentication_failed` is `auth_failed`, `rate_limit` is `rate_limit`, `billing_error` is `billing`, `server_error` is `provider_error`), else the status (401 or 403 `auth_failed`, 402 `billing`, 429 `rate_limit`, 5xx `provider_error`) |
 | Any other error, or no result line | `fail`, reason `agent_error`, no cause |
 
 An expired login was recorded from Claude Code 2.1.325: it ends with an `assistant` line whose

@@ -6,20 +6,24 @@
 export type Cause = "rate_limit" | "auth_failed" | "billing" | "provider_error";
 
 /** Claude Code's `error` on an assistant line (`SDKAssistantMessageError`) that names a cause. */
-const CAUSE_BY_ERROR: Record<string, Cause> = {
-  rate_limit: "rate_limit",
-  authentication_failed: "auth_failed",
-  billing_error: "billing",
-  server_error: "provider_error",
-};
+const CAUSE_BY_ERROR = new Map<string, Cause>([
+  ["rate_limit", "rate_limit"],
+  ["authentication_failed", "auth_failed"],
+  ["billing_error", "billing"],
+  ["server_error", "provider_error"],
+]);
 
-/** The cause an API status implies, for a result line that names no error. */
+/** The cause each API status implies, for a result line that names no error; 5xx is the provider. */
+const CAUSE_BY_STATUS = new Map<number, Cause>([
+  [401, "auth_failed"],
+  [402, "billing"],
+  [403, "auth_failed"],
+  [429, "rate_limit"],
+]);
+
 function causeOfStatus(status: number | undefined): Cause | undefined {
   if (status === undefined) return undefined;
-  if (status === 401 || status === 403) return "auth_failed";
-  if (status === 402) return "billing";
-  if (status === 429) return "rate_limit";
-  return status >= 500 ? "provider_error" : undefined;
+  return status >= 500 ? "provider_error" : CAUSE_BY_STATUS.get(status);
 }
 
 /**
@@ -28,7 +32,7 @@ function causeOfStatus(status: number | undefined): Cause | undefined {
  * `max_output_tokens`, values added later) give no cause unless the status does.
  */
 export function causeOf(error: string | undefined, status: number | undefined): Cause | undefined {
-  return (error === undefined ? undefined : CAUSE_BY_ERROR[error]) ?? causeOfStatus(status);
+  return CAUSE_BY_ERROR.get(error ?? "") ?? causeOfStatus(status);
 }
 
 /** The `rate_limit_info` of a `rate_limit_event` line (`SDKRateLimitInfo`), as far as it is read. */
@@ -44,11 +48,11 @@ export interface RateLimitInfo {
  * When a rejected limit resets, as an RFC 3339 time: the overage's reset when the overage was the
  * limit that was hit. Undefined for a limit that was not rejected or a time that is not valid.
  */
-export function resetOf(info: RateLimitInfo): string | undefined {
-  if (info.status !== "rejected") return undefined;
+export function resetOf(info: RateLimitInfo | undefined): string | undefined {
+  if (info?.status !== "rejected") return undefined;
   const overage = info.isUsingOverage === true && info.overageStatus === "rejected";
   const seconds = overage ? info.overageResetsAt : info.resetsAt;
-  if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds <= 0) return undefined;
+  if (typeof seconds !== "number" || seconds <= 0) return undefined;
   const at = new Date(seconds * 1000);
   return Number.isNaN(at.getTime()) ? undefined : at.toISOString().replace(/\.\d{3}Z$/, "Z");
 }

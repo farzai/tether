@@ -257,6 +257,15 @@ describe("output", () => {
       }
     });
 
+    it("adds an encoded form from 16 characters on", () => {
+      const secrets = new Secrets();
+      // 12 bytes: 16 characters of base64. 13 bytes plus a space: 16 characters escaped.
+      secrets.add("abcdefghijkl");
+      secrets.add("ABCDEFGHIJKLM ");
+      expect(secrets.redact(Buffer.from("abcdefghijkl").toString("base64"))).toBe("[redacted]");
+      expect(secrets.redact("ABCDEFGHIJKLM%20")).toBe("[redacted]");
+    });
+
     it("does not add encoded forms of a short secret, and forgets them with the secret", () => {
       const secrets = new Secrets();
       secrets.add("abcdef");
