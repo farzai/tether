@@ -119,6 +119,16 @@ describe("runClaudeCode", () => {
     expect(outcome.kind).toBe("refused");
   });
 
+  it("kills a session at once when its first line is not the init line", async () => {
+    const started = Date.now();
+    const { outcome } = await run({ fixture: "no-init", hang: true });
+    expect(outcome).toMatchObject({
+      kind: "refused",
+      message: "Claude Code did not describe its session first",
+    });
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
   it("reports an error when the binary cannot be started", async () => {
     const { outcome } = await run({}, join(scratch, "no-such-claude"));
     expect(outcome).toMatchObject({

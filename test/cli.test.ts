@@ -1,13 +1,15 @@
+import { spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, describe, expect, it } from "vitest";
 import { main } from "../src/cli/main.ts";
-import { Store } from "../src/client/store.ts";
+import { type AppRecord, Store } from "../src/client/store.ts";
 import { type FakeApp, type FakeAppOptions, startFakeApp } from "./fake-app/server.ts";
 
 const FAKE_CLAUDE = new URL("./fake-claude/claude.mjs", import.meta.url).pathname;
+const BIN = new URL("../src/cli/bin.ts", import.meta.url).pathname;
 chmodSync(FAKE_CLAUDE, 0o755);
 
 interface Sent {
@@ -355,6 +357,26 @@ describe.concurrent("tether start", () => {
     expect(h.out).toMatch(/not granted by local policy: Bash/);
   });
 
+  it("grants WebFetch only when local policy allows it, and warns at start when it does", async () => {
+    const h = await paired();
+    const denied = h.enqueue({ tools: { requested: ["WebFetch"] } });
+    const first = startTether(h);
+    await untilAsync(async () => (await h.status(denied.id)).status === "completed");
+    expect(h.out).toMatch(/not granted by local policy: WebFetch/);
+    expect(record(denied.record).argv[record(denied.record).argv.indexOf("--tools") + 1]).toBe("");
+    expect(h.err).not.toMatch(/Your policy lets tasks use/);
+    first.stop.abort();
+    await first.exit;
+
+    h.policy({ tools: ["WebSearch", "WebFetch"] });
+    const allowed = h.enqueue({ tools: { requested: ["WebFetch"] } });
+    startTether(h);
+    await untilAsync(async () => (await h.status(allowed.id)).status === "completed");
+    const { argv } = record(allowed.record);
+    expect(argv[argv.indexOf("--tools") + 1]).toBe("WebFetch");
+    expect(h.err).toMatch(/Your policy lets tasks use WebFetch, which can reach/);
+  });
+
   it("refuses a task whose MCP server is not the app's own, without running it", async () => {
     const h = await paired();
     const task = h.enqueue({ mcp: { url: "https://evil.example/mcp", token: "x".repeat(32) } });
@@ -454,6 +476,26 @@ describe.concurrent("tether start", () => {
     expect(await h.status(second.id)).toMatchObject({ status: "queued", attempts: 0 });
   });
 
+  it("rechecks the daily cap when a claim lands, so two apps cannot both pass it", async () => {
+    const h = await paired();
+    const other = await paired();
+    h.store().saveApp(other.store().apps()[0] as AppRecord);
+    h.policy({ daily: { tasks: 1, usd: 10 } });
+    startTether(h, ["--concurrency", "2"]);
+    // Both apps are waiting in a long-poll claim, so both passed the cap check before either lands.
+    await until(() => h.sent.filter((s) => s.path.endsWith("/claim")).length >= 2);
+    const tasks = [h.enqueue({}, { hang: true }), other.enqueue({}, { hang: true })];
+    await until(() => tasks.some((t) => existsSync(t.record)));
+    await until(() => /daily task cap reached/.test(h.out));
+    await sleep(500);
+    expect(tasks.filter((t) => existsSync(t.record))).toHaveLength(1);
+    const dropped = tasks.find((t) => !existsSync(t.record)) as { id: string };
+    const owner = tasks.indexOf(dropped as (typeof tasks)[number]) === 0 ? h : other;
+    expect(await owner.status(dropped.id)).toMatchObject({ status: "leased", attempts: 1 });
+    expect(h.reports(dropped.id).some((s) => /\/(fail|complete)$/.test(s.path))).toBe(false);
+    expect(h.out).toMatch(/left for the app to offer again/);
+  });
+
   it("does not fail running tasks when it stops: the lease is left to expire", async () => {
     const h = await paired();
     const task = h.enqueue({}, { hang: true });
@@ -536,5 +578,57 @@ describe.concurrent("tether start", () => {
     expect(h.err).toMatch(/tether connect/);
     const heartbeats = h.sent.filter((s) => s.path.endsWith("/heartbeat"));
     expect(heartbeats.length).toBe(1);
+  });
+});
+
+/** Runs `tether start` as its own process through the real entry point, as a user's shell would. */
+function startBin(h: Harness) {
+  const child = spawn("bun", [BIN, "start"], {
+    env: {
+      TETHER_HOME: h.home,
+      TETHER_CLAUDE_PATH: FAKE_CLAUDE,
+      PATH: process.env.PATH,
+      HOME: process.env.HOME,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let err = "";
+  child.stderr.on("data", (chunk) => (err += chunk));
+  child.stdout.resume();
+  const exit = new Promise<number | null>((resolve) => child.on("exit", (code) => resolve(code)));
+  cleanups.push(() => {
+    child.kill("SIGKILL");
+    return exit;
+  });
+  return { child, exit, stderr: () => err };
+}
+
+describe.concurrent("tether start, stopped by a signal", () => {
+  it("stops on SIGHUP as on Ctrl-C: the agent is stopped and the lease is left to expire", async () => {
+    const h = await paired();
+    const task = h.enqueue({}, { hang: true });
+    const { child, exit, stderr } = startBin(h);
+    await until(() => existsSync(task.record), 15_000);
+    child.kill("SIGHUP");
+    expect(await exit).toBe(0);
+    expect(stderr()).toMatch(/Stopping: running tasks are left/);
+    expect(alive(record(task.record).pid)).toBe(false);
+    expect(h.reports(task.id).some((s) => /\/(fail|complete)$/.test(s.path))).toBe(false);
+  });
+
+  it("kills every agent and removes its files before exiting on a second signal", async () => {
+    const h = await paired();
+    const task = h.enqueue({}, { hang: true, ignore_term: true, grandchild: true });
+    const { child, exit } = startBin(h);
+    await until(() => existsSync(task.record), 15_000);
+    const run = record(task.record);
+    child.kill("SIGINT");
+    await sleep(200);
+    child.kill("SIGINT");
+    const started = Date.now();
+    expect(await exit).toBe(130);
+    expect(Date.now() - started).toBeLessThan(3_000);
+    await until(() => !alive(run.pid) && !alive(run.grandchildPid), 2_000);
+    expect(existsSync(dirname(run.cwd))).toBe(false);
   });
 });

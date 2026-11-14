@@ -4,6 +4,7 @@ import {
   DEFAULT_POLICY,
   grantTools,
   parsePolicy,
+  policyWarnings,
   taskLimits,
   type Usage,
 } from "../src/client/policy.ts";
@@ -22,8 +23,31 @@ describe("grantTools", () => {
     expect(grantTools([], DEFAULT_POLICY).granted).toEqual([]);
   });
 
-  it("allows only the defaults WebSearch and WebFetch out of the box", () => {
-    expect(DEFAULT_POLICY.tools).toEqual(["WebSearch", "WebFetch"]);
+  it("allows only WebSearch out of the box: WebFetch can reach this computer's network", () => {
+    expect(DEFAULT_POLICY.tools).toEqual(["WebSearch"]);
+    expect(grantTools(["WebFetch"], DEFAULT_POLICY)).toEqual({
+      granted: [],
+      refused: ["WebFetch"],
+    });
+  });
+
+  it("grants WebFetch when the user's policy allows it", () => {
+    const policy = { ...DEFAULT_POLICY, tools: ["WebSearch", "WebFetch"] };
+    expect(grantTools(["WebFetch"], policy).granted).toEqual(["WebFetch"]);
+  });
+});
+
+describe("policyWarnings", () => {
+  it("says nothing about the default policy", () => {
+    expect(policyWarnings(DEFAULT_POLICY)).toEqual([]);
+  });
+
+  it("warns about each granted tool that reaches past the task", () => {
+    const policy = { ...DEFAULT_POLICY, tools: ["WebSearch", "WebFetch", "Bash", "PowerShell"] };
+    const warnings = policyWarnings(policy);
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0]).toMatch(/^Your policy lets tasks use WebFetch, which can reach/);
+    expect(warnings[1]).toMatch(/^Your policy lets tasks use Bash, PowerShell, which can run/);
   });
 });
 

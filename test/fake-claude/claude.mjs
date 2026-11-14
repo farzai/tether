@@ -9,6 +9,7 @@
 //   hang      after the last line, keep running until killed
 //   exit_code exit with this code instead of the one the result line implies
 //   grandchild  start a long-running child process first and record its pid
+//   ignore_term keep running on SIGTERM, so only SIGKILL stops it
 // "$TOOLS" in a fixture's init line becomes the tools from --tools, "$CWD" the working directory.
 import { spawn } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -29,6 +30,7 @@ const flag = (name) => {
 const stdin = readFileSync(0, "utf8");
 const json = stdin.slice(stdin.indexOf("{"), stdin.lastIndexOf("}") + 1);
 const fake = JSON.parse(json).fake ?? {};
+if (fake.ignore_term) process.on("SIGTERM", () => {});
 
 const grandchild = fake.grandchild
   ? spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" })
