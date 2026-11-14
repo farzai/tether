@@ -45,7 +45,7 @@ jobs:
           if-no-files-found: error
 
   # The Windows binary on Windows: it starts, finds no agent, and installs and removes a real
-  # Task Scheduler task (against an app that does not exist, so the task only retries).
+  # Task Scheduler task whose tether start runs and stops at the missing agent.
   windows-smoke:
     needs: binaries
     runs-on: windows-latest
@@ -78,9 +78,14 @@ jobs:
           @{ apps = @($app) } | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 "$env:TETHER_HOME\credentials.json"
           & $tether service install
           if ($LASTEXITCODE -ne 0) { throw "install" }
-          Start-Sleep -Seconds 5
           & $tether service status | Tee-Object -Variable status
-          if ("$status" -notmatch "installed, running") { Get-Content "$env:TETHER_HOME\service.log" -ErrorAction SilentlyContinue; throw "status" }
+          if ("$status" -notmatch "installed") { throw "status" }
+          # The task ran tether start through its wrapper, with TETHER_HOME and TETHER_CLAUDE_PATH
+          # carried: start writes to the home's service.log that it cannot find this smoke's agent.
+          $log = "$env:TETHER_HOME\service.log"
+          for ($i = 0; $i -lt 30 -and -not (Select-String -Quiet -Path $log -Pattern "Claude Code was not found" -ErrorAction SilentlyContinue); $i++) { Start-Sleep -Seconds 1 }
+          Get-Content $log -ErrorAction SilentlyContinue
+          if (-not (Select-String -Quiet -Path $log -Pattern "Claude Code was not found")) { throw "the task did not run tether start" }
           & $tether service uninstall
           & $tether service status | Tee-Object -Variable after
           if ("$after" -notmatch "not installed") { throw "uninstall" }
