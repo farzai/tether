@@ -101,9 +101,13 @@ class Harness {
       | undefined;
   }
 
-  /** Every secret the app issued is absent from all output and every request Tether made. */
+  /**
+   * Every secret the app issued is absent from all output and from every request body except
+   * pair_poll, which carries the device code by design.
+   */
   expectNoSecrets(): void {
-    const everything = `${this.out}\n${this.err}\n${JSON.stringify(this.sent)}`;
+    const bodies = this.sent.filter((s) => !s.path.endsWith("/pair/poll"));
+    const everything = `${this.out}\n${this.err}\n${JSON.stringify(bodies)}`;
     for (const secret of this.app.issuedSecrets()) expect(everything).not.toContain(secret);
   }
 }
