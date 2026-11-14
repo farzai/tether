@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { hostname } from "node:os";
 import { parseArgs } from "node:util";
 import { AppClient, AppError, CLIENT, type Fetch, parseAppUrl } from "../client/app-client.ts";
+import { SECRET_ENV_NAMES } from "../client/claude-code.ts";
 import { clean, Log, type Output, Secrets } from "../client/output.ts";
 import { policyWarnings } from "../client/policy.ts";
 import { pause } from "../client/retry.ts";
@@ -65,6 +66,7 @@ function noArgs(args: string[]): void {
 /** Runs one tether command; resolves to its exit status (0 ok, 1 failed, 2 usage error). */
 export async function main(argv: string[], io: Io): Promise<number> {
   const secrets = new Secrets();
+  for (const name of SECRET_ENV_NAMES) secrets.add(io.env[name] ?? "");
   const ctx: Context = {
     io,
     store: new Store(defaultHome(io.env)),

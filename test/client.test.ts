@@ -213,6 +213,69 @@ describe("output", () => {
     secrets.delete("tok_abcdefghijklmnopqrstuvwxyz");
     expect(secrets.redact("tok_abcdefghijklmnopqrstuvwxyz")).toBe("tok_abcdefghijklmnopqrstuvwxyz");
   });
+
+  describe("encoded secrets", () => {
+    // Characters that base64 turns into + and /, that need percent-encoding, and one outside ASCII.
+    const secret = "tok>?~+/A b&c=d%e\u00e9fghijklmnopq";
+    const b64 = Buffer.from(secret).toString("base64");
+    const url = Buffer.from(secret).toString("base64url");
+    const redactor = () => {
+      const secrets = new Secrets();
+      secrets.add(secret);
+      return secrets;
+    };
+
+    it("covers both alphabets and padding in the test secret", () => {
+      expect(b64).toMatch(/[+/]/);
+      expect(b64).toMatch(/=$/);
+      expect(url).not.toBe(b64.replace(/=+$/, ""));
+    });
+
+    it.each([
+      ["standard, padded", b64],
+      ["standard, unpadded", b64.replace(/=+$/, "")],
+      ["URL, padded", `${url}${"=".repeat((4 - (url.length % 4)) % 4)}`],
+      ["URL, unpadded", url],
+      ["percent-encoded, upper-case hex", encodeURIComponent(secret)],
+      [
+        "percent-encoded, lower-case hex",
+        encodeURIComponent(secret).replace(/%[0-9A-F]{2}/g, (m) => m.toLowerCase()),
+      ],
+    ])("redacts the secret in base64 or percent-encoding: %s", (_, encoded) => {
+      expect(redactor().redact(`x ${encoded} y`)).toBe("x [redacted] y");
+    });
+
+    it("redacts the secret inside a longer base64 value at every byte offset", () => {
+      for (const prefix of ["", "u", "us", "user:"]) {
+        for (const encode of ["base64", "base64url"] as const) {
+          const encoded = Buffer.from(`${prefix}${secret}@host`).toString(encode);
+          const out = redactor().redact(`Basic ${encoded}`);
+          expect(out).toContain("[redacted]");
+          // What is left is the prefix, the suffix and at most a character of each edge.
+          expect(out.replace("Basic ", "").replace("[redacted]", "").length).toBeLessThan(18);
+        }
+      }
+    });
+
+    it("adds an encoded form from 16 characters on", () => {
+      const secrets = new Secrets();
+      // 12 bytes: 16 characters of base64. 13 bytes plus a space: 16 characters escaped.
+      secrets.add("abcdefghijkl");
+      secrets.add("ABCDEFGHIJKLM ");
+      expect(secrets.redact(Buffer.from("abcdefghijkl").toString("base64"))).toBe("[redacted]");
+      expect(secrets.redact("ABCDEFGHIJKLM%20")).toBe("[redacted]");
+    });
+
+    it("does not add encoded forms of a short secret, and forgets them with the secret", () => {
+      const secrets = new Secrets();
+      secrets.add("abcdef");
+      const short = Buffer.from("abcdef").toString("base64");
+      expect(secrets.redact(`${short} ${encodeURIComponent("a b")}`)).toBe(`${short} a%20b`);
+      const long = redactor();
+      long.delete(secret);
+      expect(long.redact(b64)).toBe(b64);
+    });
+  });
 });
 
 describe("Claude Code adapter pieces", () => {

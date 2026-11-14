@@ -442,6 +442,36 @@ describe.concurrent("tether start", () => {
     expect(argv[argv.indexOf("--max-budget-usd") + 1]).toBe("0.05");
   });
 
+  it("reports a hit limit as an agent error with its cause and reset time", async () => {
+    const h = await paired();
+    const task = h.enqueue({}, { fixture: "rate-limit" });
+    startTether(h);
+    await untilAsync(async () => (await h.status(task.id)).status === "failed");
+    const fail = h.failOf(task.id) as Record<string, unknown>;
+    expect(fail).toMatchObject({
+      reason: "agent_error",
+      cause: "rate_limit",
+      retry_at: "2026-11-14T15:00:00Z",
+    });
+    expect(fail.message).toMatch(/usage limit/);
+    expect(h.out).toMatch(/failed: agent_error \(rate_limit\): Claude Code hit its usage limit/);
+  });
+
+  it("logs what the agent wrote to stderr, redacted, and never sends it to the app", async () => {
+    const h = await paired();
+    const key = "sk-ant-api03-fake-key-for-the-test-0123456789";
+    h.extraEnv.ANTHROPIC_API_KEY = key;
+    const task = h.enqueue({}, { fixture: "hang", leak: true });
+    startTether(h);
+    await until(() => h.failOf(task.id));
+    await until(() => /Claude Code wrote/.test(h.out));
+    expect(JSON.stringify(h.failOf(task.id))).not.toContain("mcpServers");
+    expect(h.out).toContain("mcpServers");
+    expect(h.out).toContain("[redacted]");
+    expect(`${h.out}${h.err}`).not.toContain(key);
+    h.expectNoSecrets();
+  });
+
   it("reserves each running task's budget so concurrent tasks cannot pass the spend cap", async () => {
     const h = await paired();
     h.policy({ daily: { tasks: 10, usd: 0.15 } });

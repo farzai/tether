@@ -11,6 +11,15 @@
     "reason": {
       "enum": ["agent_error", "timeout", "cancelled_by_user", "budget", "policy"]
     },
+    "cause": {
+      "description": "Why the agent failed, when it can tell: rate_limit, auth_failed, billing or provider_error. An open set: a server accepts a value it does not know and treats it as no cause.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "retry_at": {
+      "description": "When retrying makes sense, for example when a usage limit resets.",
+      "$ref": "common.json#/$defs/timestamp"
+    },
     "message": {
       "type": "string",
       "maxLength": 2000

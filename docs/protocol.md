@@ -474,6 +474,33 @@ Response `200` with [`schemas/v1/task-complete.response.json`](../schemas/v1/tas
 | `budget` | The task reached its budget limit (the app's or the user's local cap). |
 | `policy` | The user's local policy refused the task (for example a tool it cannot run without). |
 
+A failure at the model provider keeps the reason `agent_error` and names itself in the optional
+`cause`, with retry guidance in `message` and, when known, the time to retry in `retry_at`:
+
+<!-- example: task-fail.request -->
+```json
+{
+  "lease_id": "lse_8",
+  "reason": "agent_error",
+  "cause": "rate_limit",
+  "retry_at": "2026-11-14T15:00:00Z",
+  "message": "Claude Code hit its usage limit. Retry after 2026-11-14T15:00:00Z.",
+  "usage": { "input_tokens": 0, "output_tokens": 0, "cost_usd": 0 }
+}
+```
+
+| `cause` | Meaning | Retry |
+|---|---|---|
+| `rate_limit` | The agent hit its account's usage limit. | After `retry_at` when present, else later. |
+| `auth_failed` | The agent's login expired or its API key was refused. | Once the user signs the agent in again on that device. |
+| `billing` | The agent's account could not pay (no credit, no plan). | Once the user fixes the account. |
+| `provider_error` | The model provider failed (server error, overload). | Later. |
+
+- `cause` refines `agent_error`; `reason` keeps the values above, so a server that does not read
+  `cause` still sees an agent error. New causes may be added within `tether/1`: a server MUST
+  accept a `cause` it does not know (any value matching the schema's pattern) and treat it as no
+  cause. A client sends `retry_at` only with a cause.
+
 Response `200` with [`schemas/v1/task-fail.response.json`](../schemas/v1/task-fail.response.json):
 
 <!-- example: task-fail.response -->

@@ -54,12 +54,21 @@ const REPORT_ATTEMPTS = 6;
 
 type Report =
   | { kind: "complete"; body: Record<string, unknown> }
-  | { kind: "fail"; reason: string; message: string; usage?: Usage };
+  | {
+      kind: "fail";
+      reason: string;
+      message: string;
+      usage?: Usage;
+      cause?: string;
+      retry_at?: string;
+    };
+
+type Fail = Extract<Report, { kind: "fail" }>;
 
 function reportBody(report: Report): Record<string, unknown> {
   if (report.kind === "complete") return report.body;
-  const { reason, message, usage } = report;
-  return usage ? { reason, message, usage } : { reason, message };
+  const { kind: _, ...body } = report;
+  return body;
 }
 
 /** What the task ended as, for the caller's log line and spend accounting. */
@@ -164,6 +173,11 @@ class TaskRun implements TaskControl {
     this.#flushing = false;
     await flusher;
     const duration = Date.now() - startedAt;
+    if (outcome.kind === "error" && outcome.detail) {
+      // Redact the whole tail first, then cut it, so a cut cannot leave part of a secret.
+      const detail = this.#deps.secrets.redact(outcome.detail).slice(-1000);
+      this.say(`Claude Code wrote to stderr: ${detail}`);
+    }
     return this.finish(this.reportFor(outcome, duration), outcome.usage.cost_usd);
   }
 
@@ -193,11 +207,16 @@ class TaskRun implements TaskControl {
 
   private reportFor(outcome: Outcome, durationMs: number): Report {
     const base = { usage: outcome.usage };
-    const fail = (reason: string, message: string): Report => ({
+    const fail = (
+      reason: string,
+      message: string,
+      extra: Pick<Fail, "cause" | "retry_at"> = {},
+    ): Report => ({
       kind: "fail",
       reason,
-      message,
+      message: clean(this.#deps.secrets.redact(message), 2000),
       ...base,
+      ...extra,
     });
     switch (outcome.kind) {
       case "success":
@@ -215,7 +234,10 @@ class TaskRun implements TaskControl {
       case "budget":
         return fail("budget", outcome.message);
       case "error":
-        return fail("agent_error", outcome.message);
+        return fail("agent_error", outcome.message, {
+          ...(outcome.cause ? { cause: outcome.cause } : {}),
+          ...(outcome.retryAt ? { retry_at: outcome.retryAt } : {}),
+        });
       case "killed":
         return this.#reason === "timeout"
           ? fail("timeout", `Stopped after ${this.#deps.limits.timeoutS} s`)
@@ -249,7 +271,7 @@ class TaskRun implements TaskControl {
       this.say(
         report.kind === "complete"
           ? `completed: ${clean(report.body.summary as string, 200)}`
-          : `failed: ${report.reason}: ${report.message}`,
+          : `failed: ${report.reason}${report.cause ? ` (${report.cause})` : ""}: ${report.message}`,
       );
     } catch (error) {
       this.say(`could not report the result: ${(error as Error).message}`);
