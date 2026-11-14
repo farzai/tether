@@ -1,4 +1,5 @@
-import { hostname } from "node:os";
+import { homedir, hostname, userInfo } from "node:os";
+import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { AppClient, AppError, CLIENT, type Fetch, parseAppUrl } from "../client/app-client.ts";
 import { claudeVersion, SECRET_ENV_NAMES } from "../client/claude-code.ts";
@@ -6,10 +7,12 @@ import { type Keychain, systemKeychain } from "../client/keychain.ts";
 import { clean, Log, type Output, Secrets } from "../client/output.ts";
 import { policyWarnings } from "../client/policy.ts";
 import { pause } from "../client/retry.ts";
+import { type Run, run } from "../client/run.ts";
 import { type AppRecord, defaultHome, instanceName, localDate, Store } from "../client/store.ts";
 import { Worker } from "../client/worker.ts";
 import { isAllowedUrl } from "../protocol/urls.ts";
 import { doctor } from "./doctor.ts";
+import { type ServiceSpec, serviceEnv, serviceManager, thisProgram } from "./service.ts";
 
 export const USAGE = `Usage: tether <command>
 
@@ -22,6 +25,9 @@ export const USAGE = `Usage: tether <command>
   disconnect <app>      Revoke this device at the app and forget it (app URL or name).
   doctor                Check that Claude Code is installed, signed in and supports the flags
                         Tether passes, and that each app is reachable and accepts this device.
+  service install|uninstall|status
+                        Run tether start in the background, now and at every login (launchd,
+                        a systemd user unit, or Task Scheduler), remove it, or show its state.
   logs [--limit <n>]    The last tasks run (20 by default): when, app, type, id, duration, cost,
                         how it ended, and title.
 
@@ -39,6 +45,12 @@ export interface Io {
   fetch?: Fetch;
   /** The keychain for credentials; when absent, the OS keychain (or none, see systemKeychain). */
   keychain?: Keychain;
+  /** The command line that runs this Tether, for `service install` (see thisProgram). */
+  program?: string[];
+  /** For `service`: the OS, the process runner and the user's home; the real ones when absent. */
+  platform?: NodeJS.Platform;
+  run?: Run;
+  userHome?: string;
 }
 
 interface Context {
@@ -67,6 +79,7 @@ const COMMANDS: Record<string, Command> = {
   },
   disconnect: (ctx, args) => disconnect(ctx, oneArg(args)),
   logs: (ctx, args) => logs(ctx, args),
+  service: (ctx, args) => service(ctx, oneArg(args)),
   doctor: (ctx, args) => {
     noArgs(args);
     return doctor({
@@ -393,4 +406,58 @@ function parseLimit(args: string[]): number {
   } catch {
     throw new UsageError("--limit must be a whole number from 1 to 1000.");
   }
+}
+
+// service
+
+function serviceSpec(ctx: Context): ServiceSpec {
+  const { io } = ctx;
+  const home = ctx.store.home;
+  return {
+    name: instanceName(home),
+    program: io.program ?? thisProgram(process.execPath, process.argv),
+    env: serviceEnv(io.env),
+    home,
+    userHome: io.userHome ?? homedir(),
+    uid: userInfo().uid,
+    windowsUser: `${io.env.USERDOMAIN ?? ""}\\${io.env.USERNAME ?? userInfo().username}`,
+  };
+}
+
+function service(ctx: Context, action: string): number {
+  const manager = serviceManager(ctx.io.platform ?? process.platform);
+  if (!manager) throw new Error("A background service is not supported on this system.");
+  const spec = serviceSpec(ctx);
+  const exec = ctx.io.run ?? run;
+  if (action === "status") {
+    ctx.out.line(`Background service (${manager.kind}): ${manager.status(spec, exec)}`);
+    return 0;
+  }
+  if (action === "uninstall") {
+    manager.uninstall(spec, exec);
+    ctx.out.line(`Removed the background service (${manager.kind}).`);
+    return 0;
+  }
+  if (action !== "install") throw new UsageError();
+  if (ctx.store.apps().length === 0) {
+    throw new Error("No apps connected. Run: tether connect <app-url>, then install the service.");
+  }
+  for (const name of SECRET_ENV_NAMES) {
+    if (ctx.io.env[name]) {
+      ctx.err.line(
+        `The service does not carry ${name}: Claude Code there uses its own sign-in (claude auth login).`,
+      );
+    }
+  }
+  manager.install(spec, exec);
+  ctx.out.line(
+    `Installed the background service (${manager.kind}): it runs now and at every login.`,
+  );
+  ctx.out.line(
+    manager.kind === "systemd"
+      ? `Its output: journalctl --user -u ${spec.name}`
+      : `Its output: ${join(spec.home, "service.log")}`,
+  );
+  ctx.out.line("Check it with: tether service status, tether logs, tether doctor");
+  return 0;
 }

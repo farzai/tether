@@ -6,11 +6,10 @@ import {
   type Keychain,
   KeychainUnavailable,
   macKeychain,
-  type Ran,
-  type Run,
   secretToolKeychain,
   systemKeychain,
 } from "../src/client/keychain.ts";
+import type { Ran, Run } from "../src/client/run.ts";
 import { type AppRecord, instanceName, Store } from "../src/client/store.ts";
 
 const SECRET = "tcred_s3cr3t-value_0123456789";
