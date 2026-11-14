@@ -3,7 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { AppClient, AppError, parseAppUrl } from "../src/client/app-client.ts";
-import { agentEnv, fencedInput, removeDir, sessionProblem } from "../src/client/claude-code.ts";
+import {
+  agentEnv,
+  fencedInput,
+  removeDir,
+  sessionProblem,
+  taskkillTree,
+} from "../src/client/claude-code.ts";
 import { clean, Log, Secrets } from "../src/client/output.ts";
 import { DEFAULT_POLICY } from "../src/client/policy.ts";
 import { backoffMs, retryDelay, withRetry } from "../src/client/retry.ts";
@@ -296,6 +302,16 @@ describe("Claude Code adapter pieces", () => {
     expect(Object.keys(agentEnv({ anthropic_base_url: "u" }, "win32"))).toEqual([
       "anthropic_base_url",
     ]);
+  });
+
+  it("ends a running agent's tree on Windows with taskkill, and leaves an exited one alone", () => {
+    const calls: unknown[][] = [];
+    const run = (...args: unknown[]) => calls.push(args);
+    taskkillTree({ pid: 42, exitCode: null, signalCode: null }, run);
+    expect(calls).toEqual([["taskkill", ["/pid", "42", "/T", "/F"], { stdio: "ignore" }]]);
+    taskkillTree({ pid: 42, exitCode: 0, signalCode: null }, run);
+    taskkillTree({ pid: 42, exitCode: null, signalCode: "SIGTERM" }, run);
+    expect(calls).toHaveLength(1);
   });
 
   it("removes a task directory without letting a busy file hide the task's outcome", () => {

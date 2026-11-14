@@ -289,21 +289,29 @@ function execute(
 }
 
 /**
- * Signals the agent and everything it started. Elsewhere it signals the agent's process group,
- * even after the agent itself has exited, so its children die too. Windows has no groups:
- * `taskkill /T /F` ends the tree at once, while the agent still runs (after that its pid may
- * belong to another process).
+ * Windows has no process groups: `taskkill /T /F` ends the agent's tree at once. Only while the
+ * agent still runs, since after that its pid may belong to another process.
+ */
+export function taskkillTree(
+  child: Pick<ChildProcess, "pid" | "exitCode" | "signalCode">,
+  run: (command: string, args: string[], options: { stdio: "ignore" }) => unknown = spawnSync,
+): void {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  run("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+}
+
+/**
+ * Signals the agent and everything it started: its process group, even after the agent itself
+ * has exited, so its children die too.
  */
 function signalTree(child: ChildProcess, name: NodeJS.Signals): void {
-  const pid = child.pid;
-  if (pid === undefined) return;
+  if (child.pid === undefined) return;
   if (process.platform === "win32") {
-    if (child.exitCode !== null || child.signalCode !== null) return;
-    spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" });
+    taskkillTree(child);
     return;
   }
   try {
-    process.kill(-pid, name);
+    process.kill(-child.pid, name);
   } catch {
     // The group is gone.
   }

@@ -1,10 +1,11 @@
 import { chmodSync, existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   type AgentEvent,
   type AgentTask,
+  killAgentsNow,
   type Outcome,
   runClaudeCode,
 } from "../src/client/claude-code.ts";
@@ -14,7 +15,7 @@ chmodSync(FAKE_CLAUDE, 0o755);
 const scratch = mkdtempSync(join(tmpdir(), "tether-adapter-"));
 
 async function run(fake: Record<string, unknown>, command = FAKE_CLAUDE, signal?: AbortSignal) {
-  const record = join(scratch, `${Math.random()}.json`);
+  const record = (fake.record as string | undefined) ?? join(scratch, `${Math.random()}.json`);
   const task: AgentTask = {
     appName: "Paper",
     instructions: "Reply with OK.",
@@ -79,8 +80,12 @@ describe("runClaudeCode", () => {
 
   it("kills the whole process group, so a process the agent started dies too", async () => {
     const stop = new AbortController();
-    const done = run({ fixture: "hang", hang: true, grandchild: true }, FAKE_CLAUDE, stop.signal);
-    setTimeout(() => stop.abort(), 500);
+    const record = join(scratch, `group-${Math.random()}.json`);
+    const fake = { fixture: "hang", hang: true, grandchild: true, record };
+    const done = run(fake, FAKE_CLAUDE, stop.signal);
+    // Abort only once the agent has started its child, however slow the machine is.
+    while (!existsSync(record)) await new Promise((r) => setTimeout(r, 25));
+    stop.abort();
     const { seen } = await done;
     const alive = (pid: number) => {
       try {
@@ -135,6 +140,28 @@ describe("runClaudeCode", () => {
       kind: "error",
       message: "Claude Code could not be started",
     });
+  });
+
+  it("killAgentsNow kills every running agent's tree and removes its files at once", async () => {
+    const record = join(scratch, `exit-${Math.random()}.json`);
+    const done = run({ fixture: "hang", hang: true, ignore_term: true, grandchild: true, record });
+    while (!existsSync(record)) await new Promise((r) => setTimeout(r, 25));
+    const seen = JSON.parse(readFileSync(record, "utf8"));
+    killAgentsNow();
+    expect(existsSync(dirname(seen.cwd))).toBe(false);
+    expect((await done).outcome.kind).not.toBe("success");
+    const gone = (pid: number) => {
+      try {
+        process.kill(pid, 0);
+        return false;
+      } catch {
+        return true;
+      }
+    };
+    for (let i = 0; i < 40 && !gone(seen.grandchildPid); i++) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(gone(seen.pid) && gone(seen.grandchildPid)).toBe(true);
   });
 
   it("is killed when its signal aborts", async () => {
