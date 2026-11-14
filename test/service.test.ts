@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -29,8 +29,6 @@ describe("the systemd user unit", () => {
     expect(systemdUnit(SPEC)).toMatchInlineSnapshot(`
       "[Unit]
       Description=Tether: runs connected apps' tasks with Claude Code
-      After=network-online.target
-      Wants=network-online.target
 
       [Service]
       Type=simple
@@ -163,7 +161,8 @@ class ServiceRun {
   readonly calls: string[] = [];
   out = "";
   err = "";
-  answers: Record<string, Ran> = {};
+  /** Answers by command prefix; a list is answered in turn, its last answer repeating. */
+  answers: Record<string, Ran | Ran[]> = {};
 
   constructor(readonly platform: NodeJS.Platform) {}
 
@@ -183,8 +182,9 @@ class ServiceRun {
   readonly run: Run = (command, args) => {
     const line = [command, ...args].join(" ");
     this.calls.push(line);
-    const answer = Object.entries(this.answers).find(([prefix]) => line.startsWith(prefix));
-    return answer?.[1] ?? { status: 0, stdout: "", stderr: "" };
+    const answer = Object.entries(this.answers).find(([prefix]) => line.startsWith(prefix))?.[1];
+    if (!Array.isArray(answer)) return answer ?? { status: 0, stdout: "", stderr: "" };
+    return (answer.length > 1 ? answer.shift() : answer[0]) as Ran;
   };
 
   exec(action: string, env: Record<string, string> = {}): Promise<number> {
@@ -295,6 +295,63 @@ describe("tether service on macOS", () => {
     s.out = "";
     await s.exec("status");
     expect(s.out).toContain("not installed");
+  });
+});
+
+describe("tether service on macOS, over an agent already loaded", () => {
+  const busy: Ran = { status: 5, stdout: "", stderr: "Bootstrap failed: 5: Input/output error" };
+  const ok: Ran = { status: 0, stdout: "", stderr: "" };
+
+  it("makes an existing log readable only by the user", async () => {
+    const s = new ServiceRun("darwin").connected();
+    writeFileSync(join(s.home, "service.log"), "earlier output\n", { mode: 0o644 });
+    chmodSync(join(s.home, "service.log"), 0o644);
+    expect(await s.exec("install")).toBe(0);
+    expect(statSync(join(s.home, "service.log")).mode & 0o777).toBe(0o600);
+    expect(readFileSync(join(s.home, "service.log"), "utf8")).toBe("earlier output\n");
+  });
+
+  it("waits and bootstraps again while the old agent is still being booted out", async () => {
+    const s = new ServiceRun("darwin").connected();
+    s.answers["launchctl bootout"] = {
+      status: 36,
+      stdout: "",
+      stderr: "Operation now in progress",
+    };
+    s.answers["launchctl bootstrap"] = [busy, busy, ok];
+    expect(await s.exec("install")).toBe(0);
+    expect(s.calls.map((call) => call.split(" ").slice(0, 2).join(" "))).toEqual([
+      "launchctl bootout",
+      "launchctl bootstrap",
+      "sleep 1",
+      "launchctl bootstrap",
+      "sleep 1",
+      "launchctl bootstrap",
+    ]);
+  });
+
+  it("gives up after ten tries and says what launchctl printed", async () => {
+    const s = new ServiceRun("darwin").connected();
+    s.answers["launchctl bootstrap"] = busy;
+    expect(await s.exec("install")).toBe(1);
+    expect(s.calls.filter((call) => call.startsWith("launchctl bootstrap"))).toHaveLength(10);
+    expect(s.err).toMatch(/launchctl bootstrap failed: Bootstrap failed: 5: Input\/output error/);
+  });
+});
+
+describe("the release workflow", () => {
+  it("does not leave the job's token in the checkout", () => {
+    const workflow = readFileSync(
+      new URL("../.github/workflows/release.yml", import.meta.url),
+      "utf8",
+    );
+    const checkouts = workflow
+      .split("- uses: ")
+      .filter((step) => step.startsWith("actions/checkout"));
+    expect(checkouts.length).toBeGreaterThan(0);
+    for (const step of checkouts) {
+      expect(step.split("\n      - ")[0]).toMatch(/with:\s*\n\s*persist-credentials: false/);
+    }
   });
 });
 
