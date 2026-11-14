@@ -1,4 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
+import { isAllowedUrl } from "../protocol/urls.ts";
 import {
   CheckFailure,
   type Discovery,
@@ -10,7 +11,6 @@ import {
   type Http,
   type Reply,
 } from "./http.ts";
-import { isAllowedUrl } from "../protocol/urls.ts";
 
 /** What a check needs from earlier checks; the runner skips the check when one is missing. */
 export type Need =
