@@ -122,7 +122,9 @@ describe("AppClient", () => {
     expect(last?.url).toBe(`${ORIGIN}/t/tasks/a%2Fb%20c`);
     expect(last?.init?.redirect).toBe("manual");
     expect(last?.init?.body).toBeUndefined();
-    expect((last?.init?.headers as Record<string, string>)["content-type"]).toBeUndefined();
+    expect(
+      (last?.init?.headers as Record<string, string> | undefined)?.["content-type"],
+    ).toBeUndefined();
     await client.call("POST", "claim", { body: { wait_s: 0 } });
     expect(calls.at(-1)?.init?.body).toBe('{"wait_s":0}');
     expect((last?.init?.headers as Record<string, string> | undefined)?.authorization).toBe(

@@ -189,7 +189,8 @@ describe.concurrent("tether connect", () => {
   it("pairs, stores the credential readable only by the user, and names the account", async () => {
     const h = await paired();
     expect(h.out).toContain("127.0.0.1");
-    expect(h.out).toMatch(/connected as "Test user \d+"/);
+    expect(h.out).toMatch(/Connected to Fake App as "Test user \d+"/);
+    expect(h.out).toMatch(/a page on 127\.0\.0\.1:\d+/);
     const file = join(h.home, "credentials.json");
     expect(statSync(file).mode & 0o777).toBe(0o600);
     expect(statSync(h.home).mode & 0o777).toBe(0o700);
@@ -346,6 +347,7 @@ describe.concurrent("tether start", () => {
     const task = h.enqueue({ tools: { requested: ["Bash", "WebSearch"] } });
     startTether(h);
     await untilAsync(async () => (await h.status(task.id)).status === "completed");
+    expect(h.out).toMatch(/completed: OK/);
     const { argv } = record(task.record);
     expect(argv[argv.indexOf("--tools") + 1]).toBe("WebSearch");
     expect(argv[argv.indexOf("--allowedTools") + 1]).toBe("WebSearch,mcp__app");
@@ -414,6 +416,30 @@ describe.concurrent("tether start", () => {
     expect(h.failOf(task.id)?.reason).toBe("budget");
     const { argv } = record(task.record);
     expect(argv[argv.indexOf("--max-budget-usd") + 1]).toBe("0.05");
+  });
+
+  it("reserves each running task's budget so concurrent tasks cannot pass the spend cap", async () => {
+    const h = await paired();
+    h.policy({ daily: { tasks: 10, usd: 0.15 } });
+    const limits = { timeout_s: 60, max_budget_usd: 0.1 };
+    const first = h.enqueue({ limits }, { hang: true });
+    const second = h.enqueue({ limits }, { hang: true });
+    startTether(h, ["--concurrency", "2"]);
+    await until(() => existsSync(first.record));
+    await sleep(1_000);
+    expect(existsSync(second.record)).toBe(true);
+    const { argv } = record(second.record);
+    expect(argv[argv.indexOf("--max-budget-usd") + 1]).toBe("0.0499");
+  });
+
+  it("refuses a concurrency that is not a whole number from 1 to 16", async () => {
+    const h = await paired();
+    for (const bad of ["0", "17", "1.5", "two"]) {
+      expect(await h.run(["start", "--concurrency", bad])).toBe(2);
+    }
+    expect(await h.run(["start", "extra"])).toBe(2);
+    expect(await h.run(["status", "extra"])).toBe(2);
+    expect(await h.run(["nope"])).toBe(2);
   });
 
   it("stops claiming once the daily task cap is reached", async () => {

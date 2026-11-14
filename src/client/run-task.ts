@@ -247,7 +247,9 @@ class TaskRun implements TaskControl {
         REPORT_ATTEMPTS,
       );
       this.say(
-        report.kind === "complete" ? "completed" : `failed: ${report.reason}: ${report.message}`,
+        report.kind === "complete"
+          ? `completed: ${clean(report.body.summary as string, 200)}`
+          : `failed: ${report.reason}: ${report.message}`,
       );
     } catch (error) {
       this.say(`could not report the result: ${(error as Error).message}`);

@@ -149,7 +149,7 @@ async function connect(ctx: Context, value: string): Promise<number> {
     pairedAt: new Date().toISOString(),
   });
   ctx.out.line(
-    `Connected to ${client.app.name}: connected as "${approved.account.name}" (device "${approved.device.name}").`,
+    `Connected to ${client.app.name} as "${approved.account.name}" (device "${approved.device.name}").`,
   );
   ctx.out.line(`If that is not your account, run: tether disconnect ${origin}`);
   return 0;
