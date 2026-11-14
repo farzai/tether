@@ -12,7 +12,13 @@ import { type AppRecord, defaultHome, instanceName, localDate, Store } from "../
 import { Worker } from "../client/worker.ts";
 import { isAllowedUrl } from "../protocol/urls.ts";
 import { doctor } from "./doctor.ts";
-import { type ServiceSpec, serviceEnv, serviceManager, thisProgram } from "./service.ts";
+import {
+  type ServiceManager,
+  type ServiceSpec,
+  serviceEnv,
+  serviceManager,
+  thisProgram,
+} from "./service.ts";
 
 export const USAGE = `Usage: tether <command>
 
@@ -425,6 +431,11 @@ function service(ctx: Context, action: string): number {
     return 0;
   }
   if (action !== "install") throw new UsageError();
+  installService(ctx, manager, spec, exec);
+  return 0;
+}
+
+function installService(ctx: Context, manager: ServiceManager, spec: ServiceSpec, exec: Run): void {
   if (ctx.store.apps().length === 0) {
     throw new Error("No apps connected. Run: tether connect <app-url>, then install the service.");
   }
@@ -445,5 +456,4 @@ function service(ctx: Context, action: string): number {
       : `Its output: ${join(spec.home, "service.log")}`,
   );
   ctx.out.line("Check it with: tether service status, tether logs, tether doctor");
-  return 0;
 }
