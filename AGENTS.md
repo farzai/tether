@@ -33,8 +33,11 @@ Guide for anyone (human or agent) changing this repository. The product spec is
   (`claude-code.ts`), one task's run (`run-task.ts`) and the claim and heartbeat loops (`worker.ts`).
 - `src/cli/`: the `tether` command.
 - `test/fake-app/`: an in-memory app server that implements the protocol, for tests.
-- `test/fake-claude/`: a stand-in `claude` binary that replays stream-json recorded from Claude Code;
-  no test calls a real model.
+- `test/fake-claude/`: a stand-in `claude` binary that replays the stream-json fixtures in
+  `test/fixtures/claude-code/` (scrubbed: no session ids, request ids or home paths); no test calls
+  a real model.
+- `docs/claude-code-flags.md`: the flags the adapter passes and the stream-json lines it reads, by
+  Claude Code version. Change it with the adapter (a test enforces this).
 
 ## Rules
 

@@ -3,13 +3,24 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
+import {
+  type Cause,
+  causeMessage,
+  causeOf,
+  type RateLimitInfo,
+  resetOf,
+} from "./claude-code-cause.ts";
 
 /**
  * The Claude Code adapter: runs one task as a fresh `claude -p` session in an empty temporary
  * directory, with only the app's MCP server, only the granted tools, no user settings, hooks,
  * plugins, slash commands or session file, and turns its stream-json output into progress events.
- * Flags were checked against Claude Code 2.1.325.
+ * Flags and stream-json lines were checked against CLAUDE_CODE_VERSION; docs/claude-code-flags.md
+ * lists them.
  */
+
+/** The Claude Code version the flags, fixtures and stream-json reading were checked against. */
+export const CLAUDE_CODE_VERSION = "2.1.325";
 
 export const ADAPTER_NAME = "claude-code";
 /** The MCP server name the agent sees; its tools are `mcp__app__<tool>`. */
@@ -74,6 +85,8 @@ const ENV_NAMES = new Set([
   "CLAUDE_CODE_GIT_BASH_PATH",
 ]);
 const ENV_PREFIXES = ["LC_", "ANTHROPIC_"];
+/** Passed variables that hold the agent's own credentials: Tether redacts them like its own secrets. */
+export const SECRET_ENV_NAMES = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
 /** Windows env names have no case (`Path` is `PATH`), so match them in upper case there. */
 const ENV_NAMES_UPPER = new Set([...ENV_NAMES].map((name) => name.toUpperCase()));
 
@@ -119,7 +132,19 @@ export type AgentEvent =
 
 export type Outcome =
   | { kind: "success"; exitCode: number; summary: string; usage: Usage }
-  | { kind: "budget" | "error"; exitCode: number | null; message: string; usage: Usage }
+  | { kind: "budget"; exitCode: number | null; message: string; usage: Usage }
+  | {
+      kind: "error";
+      exitCode: number | null;
+      message: string;
+      usage: Usage;
+      /** Set when the session ended on a provider error that Claude Code named. */
+      cause?: Cause;
+      /** When retrying makes sense, for a hit limit whose reset time is known. */
+      retryAt?: string;
+      /** The end of what Claude Code wrote to stderr: for the local log only, never the app. */
+      detail?: string;
+    }
   | { kind: "killed"; usage: Usage }
   /** The session was not the isolated one Tether asked for; it was killed. */
   | { kind: "refused"; message: string; usage: Usage };
@@ -134,6 +159,10 @@ export interface AgentOptions {
 }
 
 const KILL_GRACE_MS = 5_000;
+/** How long to wait, after the agent exits, for its output pipes to close. */
+export const PIPE_GRACE_MS = 2_000;
+/** How much of the end of stderr is kept. */
+const STDERR_TAIL = 4_000;
 
 const systemPrompt = (task: AgentTask) => {
   const parts = [
@@ -258,7 +287,7 @@ function execute(
   const child = spawn(options.command, claudeArgs(task, dir), {
     cwd: work,
     env: agentEnv(options.env),
-    stdio: ["pipe", "pipe", "ignore"],
+    stdio: ["pipe", "pipe", "pipe"],
     detached: process.platform !== "win32",
   });
   live.set(child, dir);
@@ -270,6 +299,13 @@ function execute(
   child.stdin.end(fencedInput(task.input));
   const lines = createInterface({ input: child.stdout });
   lines.on("line", (line) => stream.line(line));
+  const stdoutClosed = new Promise((resolve) => lines.once("close", resolve));
+  const stderrClosed = new Promise((resolve) => child.stderr.once("close", resolve));
+  let stderr = "";
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (chunk: string) => {
+    stderr = (stderr + chunk).slice(-STDERR_TAIL);
+  });
   return new Promise<Outcome>((resolve) => {
     child.on("error", () => {
       live.delete(child);
@@ -280,12 +316,29 @@ function execute(
         usage: stream.usage(),
       });
     });
-    child.on("close", (code) => {
+    child.on("exit", async (code) => {
       live.delete(child);
       options.signal.removeEventListener("abort", stop);
-      resolve(stream.outcome(code, options.signal.aborted));
+      // Whatever the agent left running dies with it, so nothing keeps spending after the task.
+      signalTree(child, "SIGKILL");
+      // Read what is still in the pipes, but do not wait for a process that holds them open.
+      await settled([stdoutClosed, stderrClosed], PIPE_GRACE_MS);
+      child.stdout.destroy();
+      child.stderr.destroy();
+      const outcome = stream.outcome(code, options.signal.aborted);
+      resolve(outcome.kind === "error" && stderr ? { ...outcome, detail: stderr } : outcome);
     });
   });
+}
+
+/** Resolves once every promise has, or after `ms`, whichever comes first. */
+async function settled(promises: Promise<unknown>[], ms: number): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  const grace = new Promise((resolve) => {
+    timer = setTimeout(resolve, ms);
+  });
+  await Promise.race([Promise.all(promises), grace]);
+  clearTimeout(timer);
 }
 
 /**
@@ -341,6 +394,10 @@ interface StreamMessage {
   is_error?: boolean;
   result?: string;
   total_cost_usd?: number;
+  api_error_status?: unknown;
+  terminal_reason?: unknown;
+  error?: unknown;
+  rate_limit_info?: RateLimitInfo;
   usage?: StreamUsage;
   message?: { id?: string; usage?: StreamUsage; content?: ContentBlock[] };
 }
@@ -412,6 +469,10 @@ interface Final {
   isError: boolean;
   text: string;
   costUsd: number | undefined;
+  /** The HTTP status of the API error the session ended on, if any. */
+  apiStatus: number | undefined;
+  /** The session ended on an API error rather than on its own. */
+  apiError: boolean;
 }
 
 function final(msg: StreamMessage): Final {
@@ -420,11 +481,42 @@ function final(msg: StreamMessage): Final {
     isError: msg.is_error === true,
     text: typeof msg.result === "string" ? msg.result : "",
     costUsd: typeof msg.total_cost_usd === "number" ? msg.total_cost_usd : undefined,
+    apiStatus: typeof msg.api_error_status === "number" ? msg.api_error_status : undefined,
+    apiError: typeof msg.api_error_status === "number" || msg.terminal_reason === "api_error",
   };
 }
 
+/** What the stream said about the provider: the last assistant error and the last rejected limit. */
+interface ProviderSignals {
+  error: string | undefined;
+  resetAt: string | undefined;
+}
+
+/** The failure of a session that ended on its own with an error. */
+function failure(
+  result: Final,
+  exitCode: number | null,
+  usage: Usage,
+  signals: ProviderSignals,
+): Outcome {
+  const cause =
+    result.isError && result.apiError ? causeOf(signals.error, result.apiStatus) : undefined;
+  if (cause === undefined) {
+    const message = `Claude Code exited with code ${exitCode} (${result.subtype})`;
+    return { kind: "error", exitCode, message, usage };
+  }
+  const retryAt = cause === "rate_limit" ? signals.resetAt : undefined;
+  const message = causeMessage(cause, retryAt);
+  return { kind: "error", exitCode, message, usage, cause, ...(retryAt ? { retryAt } : {}) };
+}
+
 /** How a session that ran to its end went, from its result line and exit code. */
-function finished(result: Final | undefined, exitCode: number | null, usage: Usage): Outcome {
+function finished(
+  result: Final | undefined,
+  exitCode: number | null,
+  usage: Usage,
+  signals: ProviderSignals,
+): Outcome {
   if (result === undefined) {
     return {
       kind: "error",
@@ -439,8 +531,7 @@ function finished(result: Final | undefined, exitCode: number | null, usage: Usa
   if (result.subtype === "success" && exitCode === 0 && !result.isError) {
     return { kind: "success", exitCode, summary: result.text.slice(0, 2000), usage };
   }
-  const message = `Claude Code exited with code ${exitCode} (${result.subtype})`;
-  return { kind: "error", exitCode, message, usage };
+  return failure(result, exitCode, usage, signals);
 }
 
 function parse(text: string): StreamMessage | undefined {
@@ -461,6 +552,7 @@ class StreamParser {
   #result: Final | undefined;
   #lineSeen = false;
   #refusal: string | undefined;
+  readonly #signals: ProviderSignals = { error: undefined, resetAt: undefined };
 
   constructor(onEvent: (event: AgentEvent) => void, granted: string[], kill: () => void) {
     this.#onEvent = onEvent;
@@ -491,9 +583,13 @@ class StreamParser {
     if (isInit) this.init(msg);
     if (msg.type === "result") this.#result = final(msg);
     if (msg.type === "assistant") this.assistant(msg);
+    if (msg.type === "rate_limit_event" && msg.rate_limit_info) {
+      this.#signals.resetAt = resetOf(msg.rate_limit_info) ?? this.#signals.resetAt;
+    }
   }
 
   private assistant(msg: StreamMessage): void {
+    if (typeof msg.error === "string") this.#signals.error = msg.error;
     const message = msg.message ?? {};
     for (const block of message.content ?? []) {
       const event = blockEvent(block);
@@ -526,6 +622,6 @@ class StreamParser {
     if (!this.#lineSeen) {
       return { kind: "refused", message: "Claude Code did not describe its session", usage };
     }
-    return finished(this.#result, exitCode, usage);
+    return finished(this.#result, exitCode, usage, this.#signals);
   }
 }

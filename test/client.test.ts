@@ -237,7 +237,10 @@ describe("output", () => {
       ["URL, padded", `${url}${"=".repeat((4 - (url.length % 4)) % 4)}`],
       ["URL, unpadded", url],
       ["percent-encoded, upper-case hex", encodeURIComponent(secret)],
-      ["percent-encoded, lower-case hex", encodeURIComponent(secret).replace(/%[0-9A-F]{2}/g, (m) => m.toLowerCase())],
+      [
+        "percent-encoded, lower-case hex",
+        encodeURIComponent(secret).replace(/%[0-9A-F]{2}/g, (m) => m.toLowerCase()),
+      ],
     ])("redacts the secret in base64 or percent-encoding: %s", (_, encoded) => {
       expect(redactor().redact(`x ${encoded} y`)).toBe("x [redacted] y");
     });

@@ -188,6 +188,19 @@ describe("runClaudeCode", () => {
     expect(alive(seen.grandchildPid)).toBe(false);
   });
 
+  it("stops waiting for a pipe held by a process outside the agent's group after the grace", async () => {
+    const record = join(scratch, `escape-${Math.random()}.json`);
+    const started = Date.now();
+    const { outcome, seen } = await run({ fixture: "success", hold_pipe: "escape", record });
+    try {
+      expect(Date.now() - started).toBeGreaterThanOrEqual(PIPE_GRACE_MS);
+      expect(Date.now() - started).toBeLessThan(PIPE_GRACE_MS + 3_000);
+      expect(outcome).toMatchObject({ kind: "success", summary: "OK" });
+    } finally {
+      process.kill(seen.grandchildPid, "SIGKILL");
+    }
+  });
+
   it("keeps the end of stderr for the local log, never in the message for the app", async () => {
     const noise = "x".repeat(100_000);
     const { outcome } = await run({ fixture: "hang", stderr: `${noise}error: unknown option\n` });
@@ -289,7 +302,9 @@ describe("Claude Code fixtures and flags doc", () => {
   it("keeps the fixtures scrubbed of session ids, request ids and home paths", () => {
     for (const name of readdirSync(fixtures)) {
       const text = readFileSync(join(fixtures, name), "utf8");
-      for (const [uuid] of text.matchAll(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g)) {
+      for (const [uuid] of text.matchAll(
+        /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g,
+      )) {
         expect(uuid, name).toMatch(/^00000000-0000-4000-8000-/);
       }
       expect(text, name).not.toMatch(/\/Users\/|\/home\/|C:\\\\Users/);

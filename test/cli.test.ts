@@ -454,7 +454,7 @@ describe.concurrent("tether start", () => {
       retry_at: "2026-11-14T15:00:00Z",
     });
     expect(fail.message).toMatch(/usage limit/);
-    expect(h.err).toMatch(/failed: agent_error \(rate_limit\)/);
+    expect(h.out).toMatch(/failed: agent_error \(rate_limit\): Claude Code hit its usage limit/);
   });
 
   it("logs what the agent wrote to stderr, redacted, and never sends it to the app", async () => {
@@ -464,10 +464,11 @@ describe.concurrent("tether start", () => {
     const task = h.enqueue({}, { fixture: "hang", leak: true });
     startTether(h);
     await until(() => h.failOf(task.id));
-    await until(() => /Claude Code wrote/.test(h.err));
+    await until(() => /Claude Code wrote/.test(h.out));
     expect(JSON.stringify(h.failOf(task.id))).not.toContain("mcpServers");
-    expect(h.err).toContain("mcpServers");
-    expect(h.err).not.toContain(key);
+    expect(h.out).toContain("mcpServers");
+    expect(h.out).toContain("[redacted]");
+    expect(`${h.out}${h.err}`).not.toContain(key);
     h.expectNoSecrets();
   });
 

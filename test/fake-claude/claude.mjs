@@ -11,7 +11,7 @@
 //   grandchild  start a long-running child process first and record its pid
 //   ignore_term keep running on SIGTERM, so only SIGKILL stops it
 //   hold_pipe   start a long-running child that keeps stdout and stderr open after this exits,
-//               and record its pid
+//               and record its pid; "escape" puts it in its own process group, out of Tether's reach
 //   stderr    text to write to stderr before exiting
 //   leak      write the MCP config (with the task token, raw and in base64) and the Anthropic key to
 //             stderr, as a crashing agent might
@@ -41,8 +41,13 @@ const forever = ["-e", "setInterval(() => {}, 1000)"];
 const grandchild = fake.grandchild
   ? spawn(process.execPath, forever, { stdio: "ignore" })
   : fake.hold_pipe
-    ? spawn(process.execPath, forever, { stdio: ["ignore", "inherit", "inherit"] })
+    ? spawn(process.execPath, forever, {
+        stdio: ["ignore", "inherit", "inherit"],
+        detached: fake.hold_pipe === "escape",
+      })
     : undefined;
+// A process left holding the pipes must not keep this one from exiting.
+if (fake.hold_pipe) grandchild.unref();
 
 if (fake.record) {
   const read = (path) => (path ? readFileSync(path, "utf8") : undefined);
@@ -63,7 +68,10 @@ if (fake.record) {
 
 const here = dirname(fileURLToPath(import.meta.url));
 const tools = (flag("--tools") ?? "").split(",").filter(Boolean);
-const lines = readFileSync(join(here, "..", "fixtures", "claude-code", `${fake.fixture ?? "success"}.jsonl`), "utf8")
+const lines = readFileSync(
+  join(here, "..", "fixtures", "claude-code", `${fake.fixture ?? "success"}.jsonl`),
+  "utf8",
+)
   .split("\n")
   .filter(Boolean)
   .map((line) =>
