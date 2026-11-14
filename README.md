@@ -20,15 +20,15 @@ of this repository (see the protocol's "Conformance testing" section).
 
 Each task runs as a fresh `claude -p` session in an empty temporary directory that is deleted
 afterwards. The session gets only the app's own MCP server, only the tools both the app asked for
-and your policy allows (by default `WebSearch` and `WebFetch`; never `Bash` unless you add it), no
-user settings, hooks, plugins, skills or `CLAUDE.md`, and an environment without your other
-variables. Tether checks the session Claude Code reports and stops it if it got more.
+and your policy allows (by default only `WebSearch`; never `WebFetch` or `Bash` unless you add
+them), no user settings, hooks, plugins, skills or `CLAUDE.md`, and an environment without your
+other variables. Tether checks the session Claude Code reports and stops it if it got more.
 
 Your policy lives in `~/.tether/policy.json` (or `$TETHER_HOME`). Every field is optional:
 
 ```json
 {
-  "tools": ["WebSearch", "WebFetch"],
+  "tools": ["WebSearch"],
   "max_task_usd": 1,
   "max_timeout_s": 1800,
   "daily": { "tasks": 100, "usd": 10 },
@@ -36,8 +36,14 @@ Your policy lives in `~/.tether/policy.json` (or `$TETHER_HOME`). Every field is
 }
 ```
 
-An app can ask for less than this, never more. Device credentials are kept in
-`~/.tether/credentials.json`, readable only by you (keychain storage comes later).
+An app can ask for less than this, never more. `WebFetch` is off by default because a page fetched
+for an app can be on your own computer or network (`127.0.0.1`, your router, a cloud metadata
+address); add it only for apps you trust. `tether start` warns while your policy allows `WebFetch`,
+`Bash` or `PowerShell`. A task can spend up to one turn past its budget, since Claude Code checks
+the budget between turns.
+
+Device credentials are kept in `~/.tether/credentials.json`, readable only by you (keychain storage
+comes later).
 
 ## License
 

@@ -82,8 +82,10 @@ discovery, so the protocol can change without breaking older clients.
   and it stops when another claim takes the task, when the task is completed, failed or cancelled,
   or when the device is revoked; lease expiry alone does not stop it (protocol section 6).
 - **Local policy beats the app.** The app *requests* tools; Tether grants only the intersection with
-  the user's local allow-list. Defaults: allow `WebSearch`, `WebFetch` and the app's MCP tools; deny
-  `Bash`, every other MCP server, and every file read or write outside the task's temp directory.
+  the user's local allow-list. Defaults: allow `WebSearch` and the app's MCP tools; deny
+  `WebFetch` (it can reach loopback, LAN and cloud-metadata addresses, so an app could read the
+  user's network through it; a user may allow it, and `tether start` warns when they do), `Bash`,
+  every other MCP server, and every file read or write outside the task's temp directory.
   The app's MCP server is the one at the discovery `mcp` URL on the app's own origin; a task naming
   any other MCP URL is refused. An app can never widen this.
 - Each task runs in a fresh empty temp directory with isolated settings (no user hooks, no user MCP
@@ -102,7 +104,8 @@ discovery, so the protocol can change without breaking older clients.
    as the prompt inside a fenced data block, `--output-format stream-json`, `--mcp-config` with `--strict-mcp-config`,
    `--allowedTools` set to the granted tools, `--disallowedTools` for the rest,
    `--max-budget-usd` from the task limit (capped by the user's local cap), and no session
-   persistence. Exact flags are verified against the installed Claude Code version by
+   persistence. Claude Code checks the budget between turns, so a task can run over it by up to one
+   turn. Exact flags are verified against the installed Claude Code version by
    `tether doctor`, because CLI flags change between versions.
 3. Stream events: map tool calls and assistant messages to short progress lines and forward them;
    forward token usage and cost.
@@ -115,7 +118,11 @@ exists.
 
 ## 6. Concurrency and limits
 - Default one task at a time across all apps; configurable (`--concurrency`).
-- Local caps per day: number of tasks and total budget (USD), per app and overall.
+- Local caps per day: number of tasks and total budget (USD), per app and overall. The caps are
+  checked before a claim and again when it lands; a claim that no longer fits is dropped without a
+  report, so its lease expires and the app offers the task again.
+- When Tether stops (Ctrl-C, SIGTERM or SIGHUP) it stops its agents and leaves their leases to
+  expire; a second signal kills every agent's process tree before Tether exits.
 - Back-off on network errors; resume cleanly after sleep or reboot (leases expire on the app side).
 
 ## 7. What lives where

@@ -582,9 +582,9 @@ An error response has a 4xx or 5xx status and the body
   client can revoke its own credential.
 - **Default deny on the user's machine.** The agent gets only the tools the client grants: the
   intersection of `tools.requested` with the user's local allow-list, plus the tools of the one MCP
-  server at the discovery `mcp` URL. Defaults: allow `WebSearch`, `WebFetch` and the app's MCP
-  tools; deny `Bash`, every other MCP server, and every file read or write outside the task's own
-  empty temporary directory. No field in this protocol can widen the local policy, and `limits` can
+  server at the discovery `mcp` URL. Defaults: allow `WebSearch` and the app's MCP tools; deny
+  `WebFetch` (it reaches the user's own network) unless the user allows it, `Bash`, every other
+  MCP server, and every file read or write outside the task's own empty temporary directory. No field in this protocol can widen the local policy, and `limits` can
   only lower local limits.
 - **Untrusted content stays data.** Only `instructions` and `skill`, which the app's own code
   writes, reach the agent as instructions (in the system prompt). `input` is passed only inside a
