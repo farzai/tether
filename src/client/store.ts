@@ -43,49 +43,49 @@ export class Store {
     this.home = home;
   }
 
-  #path(name: string): string {
+  private path(name: string): string {
     return join(this.home, name);
   }
 
-  #read(name: string): unknown {
+  private read(name: string): unknown {
     try {
-      return JSON.parse(readFileSync(this.#path(name), "utf8"));
+      return JSON.parse(readFileSync(this.path(name), "utf8"));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-      throw new Error(`${this.#path(name)} could not be read: ${(error as Error).message}`);
+      throw new Error(`${this.path(name)} could not be read: ${(error as Error).message}`);
     }
   }
 
-  #write(name: string, value: unknown): void {
+  private write(name: string, value: unknown): void {
     mkdirSync(this.home, { recursive: true, mode: 0o700 });
     chmodSync(this.home, 0o700);
-    const temp = this.#path(`.${name}.${process.pid}.tmp`);
+    const temp = this.path(`.${name}.${process.pid}.tmp`);
     writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
     chmodSync(temp, 0o600);
-    renameSync(temp, this.#path(name));
+    renameSync(temp, this.path(name));
   }
 
   apps(): AppRecord[] {
-    const raw = this.#read("credentials.json") as { apps?: AppRecord[] } | undefined;
+    const raw = this.read("credentials.json") as { apps?: AppRecord[] } | undefined;
     return raw?.apps ?? [];
   }
 
   saveApp(record: AppRecord): void {
     const others = this.apps().filter((app) => app.origin !== record.origin);
-    this.#write("credentials.json", { apps: [...others, record] });
+    this.write("credentials.json", { apps: [...others, record] });
   }
 
   removeApp(origin: string): void {
-    this.#write("credentials.json", { apps: this.apps().filter((app) => app.origin !== origin) });
+    this.write("credentials.json", { apps: this.apps().filter((app) => app.origin !== origin) });
   }
 
   policy(): Policy {
-    const raw = this.#read("policy.json");
+    const raw = this.read("policy.json");
     return raw === undefined ? DEFAULT_POLICY : parsePolicy(raw);
   }
 
   usage(today: string): Usage {
-    const raw = this.#read("usage.json") as Usage | undefined;
+    const raw = this.read("usage.json") as Usage | undefined;
     return raw?.date === today ? raw : { date: today, total: { tasks: 0, usd: 0 }, apps: {} };
   }
 
@@ -100,19 +100,19 @@ export class Store {
       total: add(usage.total),
       apps: { ...usage.apps, [origin]: add(usage.apps[origin]) },
     };
-    this.#write("usage.json", next);
+    this.write("usage.json", next);
     return next;
   }
 
   runState(): RunState | undefined {
-    return this.#read("state.json") as RunState | undefined;
+    return this.read("state.json") as RunState | undefined;
   }
 
   writeRunState(state: RunState): void {
-    this.#write("state.json", state);
+    this.write("state.json", state);
   }
 
   clearRunState(): void {
-    rmSync(this.#path("state.json"), { force: true });
+    rmSync(this.path("state.json"), { force: true });
   }
 }

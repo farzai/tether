@@ -1,4 +1,4 @@
-import { type AppClient, AppError } from "./app-client.ts";
+import type { AppClient, AppError } from "./app-client.ts";
 import {
   ADAPTER_NAME,
   type AgentEvent,
@@ -56,6 +56,12 @@ type Report =
   | { kind: "complete"; body: Record<string, unknown> }
   | { kind: "fail"; reason: string; message: string; usage?: Usage };
 
+function reportBody(report: Report): Record<string, unknown> {
+  if (report.kind === "complete") return report.body;
+  const { reason, message, usage } = report;
+  return usage ? { reason, message, usage } : { reason, message };
+}
+
 /** What the task ended as, for the caller's log line and spend accounting. */
 export interface TaskResult {
   /** The reported cost, or undefined when the agent gave none (killed, refused). */
@@ -98,28 +104,28 @@ class TaskRun implements TaskControl {
     this.#abort.abort();
   }
 
-  #event(stage: string, fields: Record<string, unknown>): void {
+  private event(stage: string, fields: Record<string, unknown>): void {
     this.#queue.push({ at: new Date().toISOString(), stage, ...fields });
   }
 
-  #say(text: string): void {
+  private say(text: string): void {
     this.#deps.log.line(`${this.#deps.client.app.name}  ${this.#claim.task.id}  ${text}`);
   }
 
   async start(): Promise<TaskResult> {
     try {
-      return await this.#run();
+      return await this.run();
     } finally {
       this.#deps.secrets.delete(this.#claim.task.mcp.token);
     }
   }
 
-  async #run(): Promise<TaskResult> {
+  private async run(): Promise<TaskResult> {
     const { task } = this.#claim;
     const { client, policy, limits } = this.#deps;
-    this.#say(`started: ${task.title}`);
+    this.say(`started: ${task.title}`);
     if (task.mcp.url !== client.app.mcpUrl) {
-      return this.#finish(
+      return this.finish(
         {
           kind: "fail",
           reason: "policy",
@@ -129,28 +135,28 @@ class TaskRun implements TaskControl {
       );
     }
     if (limits.budgetUsd < 0.01) {
-      return this.#finish(
+      return this.finish(
         { kind: "fail", reason: "budget", message: "No budget left under the user's local caps." },
         undefined,
       );
     }
     const grant = grantTools(task.tools.requested, policy);
-    this.#event("started", { message: `Running ${ADAPTER_NAME}` });
+    this.event("started", { message: `Running ${ADAPTER_NAME}` });
     if (grant.refused.length > 0) {
       const line = `Tools not granted by local policy: ${grant.refused.join(", ")}`;
-      this.#say(line.replace("Tools not", "tools not"));
-      this.#event("message", { message: line });
+      this.say(line.replace("Tools not", "tools not"));
+      this.event("message", { message: line });
     }
     const timer = setTimeout(() => this.stop("timeout"), limits.timeoutS * 1000);
-    const flusher = this.#flushLoop();
+    const flusher = this.flushLoop();
     const startedAt = Date.now();
     let outcome: Outcome;
     try {
-      outcome = await this.#deps.runAgent(this.#agentTask(grant.granted), {
+      outcome = await this.#deps.runAgent(this.agentTask(grant.granted), {
         command: this.#deps.agentCommand,
         env: this.#deps.env,
         signal: this.#abort.signal,
-        onEvent: (event) => this.#onAgentEvent(event),
+        onEvent: (event) => this.onAgentEvent(event),
       });
     } finally {
       clearTimeout(timer);
@@ -158,10 +164,10 @@ class TaskRun implements TaskControl {
     this.#flushing = false;
     await flusher;
     const duration = Date.now() - startedAt;
-    return this.#finish(this.#reportFor(outcome, duration), outcome.usage.cost_usd);
+    return this.finish(this.reportFor(outcome, duration), outcome.usage.cost_usd);
   }
 
-  #agentTask(tools: string[]): AgentTask {
+  private agentTask(tools: string[]): AgentTask {
     const { task } = this.#claim;
     const agentTask: AgentTask = {
       appName: this.#deps.client.app.name,
@@ -175,17 +181,17 @@ class TaskRun implements TaskControl {
     return agentTask;
   }
 
-  #onAgentEvent(event: AgentEvent): void {
+  private onAgentEvent(event: AgentEvent): void {
     if (event.stage === "usage") {
-      this.#event("usage", { usage: event.usage });
+      this.event("usage", { usage: event.usage });
       return;
     }
     const message = clean(this.#deps.secrets.redact(event.message), 2000);
-    if (event.stage === "tool") this.#say(message);
-    this.#event(event.stage, { message });
+    if (event.stage === "tool") this.say(message);
+    this.event(event.stage, { message });
   }
 
-  #reportFor(outcome: Outcome, durationMs: number): Report {
+  private reportFor(outcome: Outcome, durationMs: number): Report {
     const base = { usage: outcome.usage };
     const fail = (reason: string, message: string): Report => ({
       kind: "fail",
@@ -218,43 +224,33 @@ class TaskRun implements TaskControl {
   }
 
   /** Sends the one report, unless the task is no longer ours or Tether is shutting down. */
-  async #finish(report: Report, costUsd: number | undefined): Promise<TaskResult> {
+  private async finish(report: Report, costUsd: number | undefined): Promise<TaskResult> {
     const reason = this.#reason;
-    if (reason === "shutdown" || reason === "lease_lost" || reason === "unauthorized") {
-      this.#say(
-        reason === "shutdown"
-          ? "stopped; the app will offer it again"
-          : "dropped: the lease is gone",
-      );
+    if (reason === "shutdown") {
+      this.say("stopped; the app will offer it again");
       return { costUsd, abandoned: true };
     }
-    const leaseId = this.#claim.lease.id;
+    if (reason === "lease_lost" || reason === "unauthorized") {
+      this.say("dropped: the task is no longer this device's");
+      return { costUsd, abandoned: true };
+    }
     const key = report.kind === "complete" ? "task_complete" : "task_fail";
-    const body =
-      report.kind === "complete"
-        ? { lease_id: leaseId, ...report.body }
-        : {
-            lease_id: leaseId,
-            reason: report.reason,
-            message: report.message,
-            ...(report.usage ? { usage: report.usage } : {}),
-          };
     try {
       await withRetry(
         () =>
           this.#deps.client.call("POST", key, {
             id: this.#claim.task.id,
             credential: this.#deps.credential,
-            body,
+            body: { lease_id: this.#claim.lease.id, ...reportBody(report) },
             schema: `${key.replace("_", "-")}.response`,
           }),
         REPORT_ATTEMPTS,
       );
-      this.#say(
+      this.say(
         report.kind === "complete" ? "completed" : `failed: ${report.reason}: ${report.message}`,
       );
     } catch (error) {
-      this.#say(`could not report the result: ${(error as Error).message}`);
+      this.say(`could not report the result: ${(error as Error).message}`);
     }
     return { costUsd, abandoned: false };
   }
@@ -263,36 +259,41 @@ class TaskRun implements TaskControl {
 
   #flushing = true;
 
-  async #flushLoop(): Promise<void> {
+  private async flushLoop(): Promise<void> {
     while (this.#flushing) {
       await new Promise((resolve) => setTimeout(resolve, 100));
       const since = Date.now() - this.#lastRenewal;
       // Progress goes out every couple of seconds; with nothing to say, renew at a third of the lease.
       const due = (this.#queue.length > 0 && since >= FLUSH_MS) || since >= this.#leaseMs / 3;
-      if (due && this.#flushing) await this.#flush();
+      if (due && this.#flushing) await this.flush();
     }
-    if (this.#reason === undefined) await this.#flush();
+    if (this.#reason === undefined) await this.flush();
   }
 
-  async #flush(): Promise<void> {
+  private async flush(): Promise<void> {
     const events = this.#queue.slice(0, MAX_EVENTS);
+    let reply: { status: string; lease?: { duration_s: number } };
     try {
-      const reply = (await this.#deps.client.call("POST", "task_events", {
+      reply = (await this.#deps.client.call("POST", "task_events", {
         id: this.#claim.task.id,
         credential: this.#deps.credential,
         body: { lease_id: this.#claim.lease.id, events },
         schema: "task-events.response",
-      })) as { status: string; lease?: { duration_s: number } };
-      this.#queue.splice(0, events.length);
-      this.#lastRenewal = Date.now();
-      if (reply.lease) this.#leaseMs = reply.lease.duration_s * 1000;
-      if (reply.status === "cancelled") this.stop("cancelled");
+      })) as typeof reply;
     } catch (error) {
-      if (!(error instanceof AppError)) throw error;
-      if (error.kind === "gone") this.stop("lease_lost");
-      else if (error.kind === "unauthorized") this.stop("unauthorized");
-      else if (error.kind === "rejected" || error.kind === "refused")
-        this.#queue.splice(0, events.length);
+      this.flushFailed(error as AppError, events.length);
+      return;
     }
+    this.#queue.splice(0, events.length);
+    this.#lastRenewal = Date.now();
+    if (reply.lease) this.#leaseMs = reply.lease.duration_s * 1000;
+    if (reply.status === "cancelled") this.stop("cancelled");
+  }
+
+  /** A lost lease or a dead credential stops the agent; events the app refused are dropped. */
+  private flushFailed(error: AppError, sent: number): void {
+    if (error.kind === "gone") this.stop("lease_lost");
+    if (error.kind === "unauthorized") this.stop("unauthorized");
+    if (error.kind === "rejected") this.#queue.splice(0, sent);
   }
 }

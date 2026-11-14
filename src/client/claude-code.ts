@@ -300,6 +300,13 @@ const toUsage = (u: StreamUsage | undefined): Usage => ({
   cache_write_tokens: u?.cache_creation_input_tokens ?? 0,
 });
 
+/** The progress event for one content block: a tool call or a line of text. */
+function blockEvent(block: ContentBlock): AgentEvent | undefined {
+  if (block.type === "tool_use") return { stage: "tool", message: toolLine(block) };
+  const text = block.type === "text" ? (block.text ?? "").trim() : "";
+  return text ? { stage: "message", message: text.slice(0, 500) } : undefined;
+}
+
 /** The first string value of a tool's input, cut short: enough to say what the tool did. */
 function toolLine(block: ContentBlock): string {
   const first = Object.values(block.input ?? {}).find((v) => typeof v === "string");
@@ -388,7 +395,7 @@ class StreamParser {
   }
 
   /** Kills the agent unless its session is exactly the isolated one Tether asked for. */
-  #init(msg: StreamMessage): void {
+  private init(msg: StreamMessage): void {
     this.#initSeen = true;
     const refusal = sessionProblem(msg, this.#granted);
     if (refusal === undefined) return;
@@ -403,22 +410,20 @@ class StreamParser {
     } catch {
       return;
     }
-    if (msg.type === "system" && msg.subtype === "init") this.#init(msg);
+    if (msg.type === "system" && msg.subtype === "init") this.init(msg);
     if (msg.type === "result") this.#result = final(msg);
-    if (msg.type === "assistant") this.#assistant(msg);
+    if (msg.type === "assistant") this.assistant(msg);
   }
 
-  #assistant(msg: StreamMessage): void {
-    for (const block of msg.message?.content ?? []) {
-      if (block.type === "tool_use") this.#onEvent({ stage: "tool", message: toolLine(block) });
-      if (block.type === "text" && block.text?.trim()) {
-        this.#onEvent({ stage: "message", message: block.text.slice(0, 500) });
-      }
+  private assistant(msg: StreamMessage): void {
+    const message = msg.message ?? {};
+    for (const block of message.content ?? []) {
+      const event = blockEvent(block);
+      if (event) this.#onEvent(event);
     }
     // Claude Code repeats a message's usage on each of its content blocks: count each id once.
-    const id = msg.message?.id;
-    if (id && msg.message?.usage && !this.#counted.has(id)) {
-      this.#counted.set(id, toUsage(msg.message.usage));
+    if (message.id && message.usage && !this.#counted.has(message.id)) {
+      this.#counted.set(message.id, toUsage(message.usage));
       this.#onEvent({ stage: "usage", usage: this.usage() });
     }
   }

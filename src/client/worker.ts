@@ -103,42 +103,45 @@ export class Worker {
   /** Runs until stopped; resolves to the exit status (1 when no app could be served). */
   async run(apps: AppRecord[]): Promise<number> {
     for (const app of apps) this.#opts.secrets.add(app.credential);
-    this.#publish();
-    const results = await Promise.all(apps.map((app) => this.#serve(app, apps.length)));
+    this.publish();
+    const results = await Promise.all(apps.map((app) => this.serve(app, apps.length)));
     await Promise.all([...this.#running.values()].map((r) => r.done));
     this.#opts.store.clearRunState();
     return results.some((ok) => ok) ? 0 : 1;
   }
 
   /** Serves one app until shutdown or until its credential is refused; false on refusal. */
-  async #serve(record: AppRecord, appCount: number): Promise<boolean> {
+  private async serve(record: AppRecord, appCount: number): Promise<boolean> {
     const appStop = new AbortController();
     const stop = AbortSignal.any([appStop.signal, this.#opts.signal]);
-    const client = await this.#discover(record, stop);
-    if (!client) return !appStop.signal.aborted;
-    const dead = (error: unknown) => {
-      if (!(error instanceof AppError) || error.kind !== "unauthorized" || appStop.signal.aborted)
-        return;
-      this.#opts.errors.line(
-        `${record.name}  the app no longer accepts this device. Pair again: tether connect ${record.origin}`,
-      );
-      for (const task of this.#running.values())
-        if (task.app === record.origin) task.control.stop("unauthorized");
-      appStop.abort();
-    };
+    const client = await this.discover(record, stop);
+    if (!client) return true;
+    const dead = (error: unknown) => this.refused(record, appStop, error);
     this.#opts.log.line(`${client.app.name}  online, waiting for tasks`);
     await Promise.all([
-      this.#heartbeatLoop(client, record, stop, dead),
-      this.#claimLoop(client, record, stop, dead, appCount > 1 ? 5 : 30),
+      this.heartbeatLoop(client, record, stop, dead),
+      this.claimLoop(client, record, stop, dead, appCount > 1 ? 5 : 30),
     ]);
     return !appStop.signal.aborted;
   }
 
-  async #discover(record: AppRecord, stop: AbortSignal): Promise<AppClient | undefined> {
+  /** On 401 the device is revoked: stop this app's tasks and loops and ask the user to pair again. */
+  private refused(record: AppRecord, appStop: AbortController, error: unknown): void {
+    if (!(error instanceof AppError) || error.kind !== "unauthorized") return;
+    if (appStop.signal.aborted) return;
+    this.#opts.errors.line(
+      `${record.name}  the app no longer accepts this device. Pair again: tether connect ${record.origin}`,
+    );
+    for (const task of this.#running.values()) {
+      if (task.app === record.origin) task.control.stop("unauthorized");
+    }
+    appStop.abort();
+  }
+
+  private async discover(record: AppRecord, stop: AbortSignal): Promise<AppClient | undefined> {
     for (let attempt = 0; !stop.aborted; attempt += 1) {
       try {
-        const client = await AppClient.discover(record.origin, this.#opts.fetch);
-        if (client.app.origin === record.origin) return client;
+        return await AppClient.discover(record.origin, this.#opts.fetch);
       } catch (error) {
         this.#opts.log.line(`${record.name}  ${(error as Error).message}; retrying`);
       }
@@ -147,7 +150,7 @@ export class Worker {
     return undefined;
   }
 
-  async #heartbeatLoop(
+  private async heartbeatLoop(
     client: AppClient,
     record: AppRecord,
     stop: AbortSignal,
@@ -183,7 +186,7 @@ export class Worker {
     }
   }
 
-  #usage(today: string): Usage {
+  private usage(today: string): Usage {
     const usage = this.#opts.store.usage(today);
     const apps: Record<string, Cap> = { ...usage.apps };
     let reserved = 0;
@@ -196,11 +199,11 @@ export class Worker {
   }
 
   /** Waits until today's caps leave room for a task of this app. */
-  async #roomForTask(record: AppRecord, stop: AbortSignal): Promise<void> {
+  private async roomForTask(record: AppRecord, stop: AbortSignal): Promise<void> {
     let said: string | undefined;
     while (!stop.aborted) {
       const policy = this.#opts.store.policy();
-      const usage = this.#usage(localDate(new Date()));
+      const usage = this.usage(localDate(new Date()));
       const reached =
         capReached(policy, usage, record.origin) ??
         (taskLimits({ timeout_s: 1, max_budget_usd: 1 }, policy, usage, record.origin).budgetUsd <
@@ -214,7 +217,7 @@ export class Worker {
     }
   }
 
-  async #claimLoop(
+  private async claimLoop(
     client: AppClient,
     record: AppRecord,
     stop: AbortSignal,
@@ -222,7 +225,7 @@ export class Worker {
     waitS: number,
   ): Promise<void> {
     for (let failures = 0; !stop.aborted; ) {
-      await this.#roomForTask(record, stop);
+      await this.roomForTask(record, stop);
       if (!(await this.#slots.take(stop))) return;
       let claim: Claimed | undefined;
       try {
@@ -247,14 +250,14 @@ export class Worker {
         this.#slots.give();
         continue;
       }
-      this.#start(client, record, claim);
+      this.start(client, record, claim);
     }
   }
 
-  #start(client: AppClient, record: AppRecord, claim: Claimed): void {
+  private start(client: AppClient, record: AppRecord, claim: Claimed): void {
     const today = localDate(new Date());
     const policy = this.#opts.store.policy();
-    const limits = taskLimits(claim.task.limits, policy, this.#usage(today), record.origin);
+    const limits = taskLimits(claim.task.limits, policy, this.usage(today), record.origin);
     const reservation = Math.max(0, limits.budgetUsd);
     this.#opts.store.addUsage(today, record.origin, { tasks: 1, usd: 0 });
     this.#reserved.set(record.origin, (this.#reserved.get(record.origin) ?? 0) + reservation);
@@ -281,7 +284,7 @@ export class Worker {
         this.#opts.store.addUsage(localDate(new Date()), record.origin, { tasks: 0, usd: spent });
         this.#running.delete(key);
         this.#slots.give();
-        this.#publish();
+        this.publish();
       });
     this.#running.set(key, {
       app: record.origin,
@@ -291,10 +294,10 @@ export class Worker {
       control,
       done: settled,
     });
-    this.#publish();
+    this.publish();
   }
 
-  #publish(): void {
+  private publish(): void {
     this.#opts.store.writeRunState({
       pid: process.pid,
       startedAt: this.#startedAt,

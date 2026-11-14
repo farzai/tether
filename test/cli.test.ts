@@ -33,10 +33,16 @@ class Harness {
     return this;
   }
 
+  /** Answers a request instead of the app, keyed by endpoint path suffix; undefined passes it on. */
+  intercept: Record<string, () => Response | undefined> = {};
+
   readonly fetch = async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input));
     const body = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
     this.sent.push({ method: init?.method ?? "GET", path: url.pathname, body });
+    const hook = Object.entries(this.intercept).find(([suffix]) => url.pathname.endsWith(suffix));
+    const answer = hook?.[1]();
+    if (answer) return answer;
     const res = await fetch(input, init);
     const rule = Object.entries(this.rewrite).find(([suffix]) => url.pathname.endsWith(suffix));
     if (!rule || res.status !== 200) return res;
@@ -137,6 +143,9 @@ async function untilAsync<T>(probe: () => Promise<T | undefined | false>, timeou
   }
 }
 
+const errorBody = (code: string) => ({ error: { code, message: "test" } });
+const jsonResponse = (status: number, body: unknown) =>
+  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const record = (path: string) => JSON.parse(readFileSync(path, "utf8"));
 const alive = (pid: number) => {
   try {
@@ -430,6 +439,54 @@ describe("tether start", () => {
     expect(alive(record(task.record).pid)).toBe(false);
     expect(h.reports(task.id).some((s) => /\/(fail|complete)$/.test(s.path))).toBe(false);
     expect(await h.status(task.id)).toMatchObject({ status: "leased", attempts: 1 });
+  });
+
+  it("drops the task without a report when the lease is lost", async () => {
+    const h = await paired();
+    const task = h.enqueue({}, { hang: true });
+    startTether(h);
+    await until(() => existsSync(task.record));
+    h.intercept["/events"] = () => jsonResponse(409, errorBody("lease_lost"));
+    await until(() => !alive(record(task.record).pid), 8_000);
+    await until(() => /no longer this device's/.test(h.out));
+    expect(h.reports(task.id).some((s) => /\/(fail|complete)$/.test(s.path))).toBe(false);
+  });
+
+  it("stops the app's running task when the device is revoked mid-task", async () => {
+    const h = await paired();
+    h.rewrite["/heartbeat"] = (body) => ({ ...body, heartbeat_interval_s: 1 });
+    const task = h.enqueue({}, { hang: true });
+    const { exit } = startTether(h);
+    await until(() => existsSync(task.record));
+    await fetch(`${h.app.url}/tether/v1/devices/revoke`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${h.credential()}` },
+    });
+    expect(await exit).toBe(1);
+    expect(h.err).toMatch(/Pair again: tether connect/);
+    expect(alive(record(task.record).pid)).toBe(false);
+    expect(h.reports(task.id).some((s) => /\/(fail|complete)$/.test(s.path))).toBe(false);
+  });
+
+  it("drops events the app refuses and still completes the task", async () => {
+    const h = await paired();
+    let refusals = 1;
+    h.intercept["/events"] = () =>
+      refusals-- > 0 ? jsonResponse(400, errorBody("invalid_request")) : undefined;
+    const task = h.enqueue({}, { delay_ms: 700 });
+    startTether(h);
+    await untilAsync(async () => (await h.status(task.id)).status === "completed", 15_000);
+    expect(refusals).toBeLessThan(0);
+  });
+
+  it("keeps trying an app that is down at start and stops cleanly", async () => {
+    const h = await paired();
+    await h.app.close();
+    const { exit, stop } = startTether(h);
+    await until(() => /retrying/.test(h.out));
+    stop.abort();
+    expect(await exit).toBe(0);
+    h.app = await startFakeApp();
   });
 
   it("refuses a second start while one is running", async () => {
