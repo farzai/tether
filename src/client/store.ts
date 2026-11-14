@@ -57,8 +57,11 @@ export class Store {
   }
 
   private write(name: string, value: unknown): void {
-    mkdirSync(this.home, { recursive: true, mode: 0o700 });
-    chmodSync(this.home, 0o700);
+    // Only a home this call created is set to 0700: TETHER_HOME may point at a directory the user
+    // owns for other things, such as their home directory, whose mode is theirs to keep.
+    if (mkdirSync(this.home, { recursive: true, mode: 0o700 }) !== undefined) {
+      chmodSync(this.home, 0o700);
+    }
     const temp = this.path(`.${name}.${process.pid}.tmp`);
     writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
     chmodSync(temp, 0o600);

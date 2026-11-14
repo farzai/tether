@@ -1,4 +1,4 @@
-import { type ChildProcess, spawn } from "node:child_process";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -71,16 +71,25 @@ const ENV_NAMES = new Set([
   "HOMEPATH",
   "TEMP",
   "TMP",
+  "CLAUDE_CODE_GIT_BASH_PATH",
 ]);
 const ENV_PREFIXES = ["LC_", "ANTHROPIC_"];
+/** Windows env names have no case (`Path` is `PATH`), so match them in upper case there. */
+const ENV_NAMES_UPPER = new Set([...ENV_NAMES].map((name) => name.toUpperCase()));
 
-export function agentEnv(env: Record<string, string | undefined>): Record<string, string> {
+export function agentEnv(
+  env: Record<string, string | undefined>,
+  platform: NodeJS.Platform = process.platform,
+): Record<string, string> {
+  const anyCase = platform === "win32";
+  const allowed = (name: string) => {
+    const key = anyCase ? name.toUpperCase() : name;
+    const names = anyCase ? ENV_NAMES_UPPER : ENV_NAMES;
+    return names.has(key) || ENV_PREFIXES.some((prefix) => key.startsWith(prefix));
+  };
   const out: Record<string, string> = {};
   for (const [name, value] of Object.entries(env)) {
-    if (value === undefined) continue;
-    if (ENV_NAMES.has(name) || ENV_PREFIXES.some((prefix) => name.startsWith(prefix))) {
-      out[name] = value;
-    }
+    if (value !== undefined && allowed(name)) out[name] = value;
   }
   return out;
 }
@@ -203,13 +212,40 @@ function prepare(task: AgentTask): { dir: string; work: string } {
   return { dir, work };
 }
 
+/**
+ * Removes a task's directory. A failure (a file still busy on Windows) must not replace the task's
+ * outcome, so it is retried briefly and then left to the system's temp cleanup.
+ */
+export function removeDir(dir: string, rm: typeof rmSync = rmSync): void {
+  try {
+    rm(dir, { recursive: true, force: true, maxRetries: 3 });
+  } catch {
+    // Left behind; the outcome still reaches the app.
+  }
+}
+
+/** Every agent still running, with its temporary directory, for killAgentsNow. */
+const live = new Map<ChildProcess, string>();
+
+/**
+ * SIGKILLs every running agent's process tree and removes its directory, synchronously, so it can
+ * run in an `exit` handler: no agent may outlive Tether and keep spending outside its caps.
+ */
+export function killAgentsNow(): void {
+  for (const [child, dir] of live) {
+    signalTree(child, "SIGKILL");
+    removeDir(dir);
+  }
+  live.clear();
+}
+
 /** Runs the task to its end and always removes its temporary directory. */
 export async function runClaudeCode(task: AgentTask, options: AgentOptions): Promise<Outcome> {
   const { dir, work } = prepare(task);
   try {
     return await execute(task, options, dir, work);
   } finally {
-    rmSync(dir, { recursive: true });
+    removeDir(dir);
   }
 }
 
@@ -225,6 +261,7 @@ function execute(
     stdio: ["pipe", "pipe", "ignore"],
     detached: process.platform !== "win32",
   });
+  live.set(child, dir);
   const stop = () => kill(child);
   const stream = new StreamParser(options.onEvent, task.tools, stop);
   if (options.signal.aborted) stop();
@@ -234,35 +271,48 @@ function execute(
   const lines = createInterface({ input: child.stdout });
   lines.on("line", (line) => stream.line(line));
   return new Promise<Outcome>((resolve) => {
-    child.on("error", () =>
+    child.on("error", () => {
+      live.delete(child);
       resolve({
         kind: "error",
         exitCode: null,
         message: "Claude Code could not be started",
         usage: stream.usage(),
-      }),
-    );
+      });
+    });
     child.on("close", (code) => {
+      live.delete(child);
       options.signal.removeEventListener("abort", stop);
       resolve(stream.outcome(code, options.signal.aborted));
     });
   });
 }
 
-/** SIGTERM to the agent's process group, then SIGKILL if it is still there after a grace period. */
-function kill(child: ChildProcess): void {
-  const signal = (name: NodeJS.Signals) => {
-    // Once it has exited its pid may belong to another process: never signal it then.
+/**
+ * Signals the agent and everything it started. Elsewhere it signals the agent's process group,
+ * even after the agent itself has exited, so its children die too. Windows has no groups:
+ * `taskkill /T /F` ends the tree at once, while the agent still runs (after that its pid may
+ * belong to another process).
+ */
+function signalTree(child: ChildProcess, name: NodeJS.Signals): void {
+  const pid = child.pid;
+  if (pid === undefined) return;
+  if (process.platform === "win32") {
     if (child.exitCode !== null || child.signalCode !== null) return;
-    try {
-      if (process.platform === "win32") child.kill(name);
-      else process.kill(-(child.pid as number), name);
-    } catch {
-      child.kill(name);
-    }
-  };
-  signal("SIGTERM");
-  setTimeout(() => signal("SIGKILL"), KILL_GRACE_MS).unref();
+    spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" });
+    return;
+  }
+  try {
+    process.kill(-pid, name);
+  } catch {
+    // The group is gone.
+  }
+}
+
+/** SIGTERM to the agent's tree, then SIGKILL after a grace period for whatever is left. */
+function kill(child: ChildProcess): void {
+  signalTree(child, "SIGTERM");
+  setTimeout(() => signalTree(child, "SIGKILL"), KILL_GRACE_MS).unref();
 }
 
 interface StreamUsage {
@@ -315,28 +365,34 @@ function toolLine(block: ContentBlock): string {
   return typeof first === "string" ? `${name}: ${first.slice(0, 200)}` : name;
 }
 
-const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
 const field = (value: unknown, key: string): unknown => (value as Record<string, unknown>)?.[key];
+
+/** The lists an init line must carry; one that is missing could hide something loaded. */
+const SESSION_LISTS = ["tools", "mcp_servers", "plugins", "skills", "slash_commands"] as const;
+type Session = Record<(typeof SESSION_LISTS)[number], unknown[]>;
 
 /**
  * What is wrong with the session Claude Code describes in its init line, or undefined. Flags can
  * change meaning between versions; this checks the result instead of trusting them.
  */
-export function sessionProblem(init: StreamMessage, granted: string[]): string | undefined {
-  const extraTool = list(init.tools).find(
+export function sessionProblem(msg: StreamMessage, granted: string[]): string | undefined {
+  const missing = SESSION_LISTS.find((key) => !Array.isArray(msg[key]));
+  if (missing !== undefined) return `the session did not list its ${missing}`;
+  const init = msg as Session;
+  const extraTool = init.tools.find(
     (tool) =>
       typeof tool !== "string" ||
       (!granted.includes(tool) && !tool.startsWith(`mcp__${MCP_SERVER}__`)),
   );
   if (extraTool !== undefined)
     return `the session has a tool that was not granted: ${String(extraTool)}`;
-  if (list(init.mcp_servers).some((server) => field(server, "name") !== MCP_SERVER)) {
+  if (init.mcp_servers.some((server) => field(server, "name") !== MCP_SERVER)) {
     return "the session loaded an MCP server other than the app's";
   }
-  if (list(init.plugins).some((plugin) => field(plugin, "path") !== "builtin")) {
+  if (init.plugins.some((plugin) => field(plugin, "path") !== "builtin")) {
     return "the session loaded a plugin installed by the user";
   }
-  if (list(init.skills).length > 0 || list(init.slash_commands).length > 0) {
+  if (init.skills.length > 0 || init.slash_commands.length > 0) {
     return "the session loaded skills or slash commands";
   }
   return undefined;
@@ -379,6 +435,15 @@ function finished(result: Final | undefined, exitCode: number | null, usage: Usa
   return { kind: "error", exitCode, message, usage };
 }
 
+function parse(text: string): StreamMessage | undefined {
+  try {
+    const msg: unknown = JSON.parse(text);
+    return typeof msg === "object" && msg !== null ? (msg as StreamMessage) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Folds stream-json lines into events, running usage and the final result. */
 class StreamParser {
   readonly #onEvent: (event: AgentEvent) => void;
@@ -386,7 +451,7 @@ class StreamParser {
   readonly #kill: () => void;
   readonly #counted = new Map<string, Usage>();
   #result: Final | undefined;
-  #initSeen = false;
+  #lineSeen = false;
   #refusal: string | undefined;
 
   constructor(onEvent: (event: AgentEvent) => void, granted: string[], kill: () => void) {
@@ -395,23 +460,27 @@ class StreamParser {
     this.#kill = kill;
   }
 
-  /** Kills the agent unless its session is exactly the isolated one Tether asked for. */
-  private init(msg: StreamMessage): void {
-    this.#initSeen = true;
-    const refusal = sessionProblem(msg, this.#granted);
-    if (refusal === undefined) return;
+  /** Kills the agent with a refusal; the first one wins. */
+  private refuse(refusal: string): void {
+    if (this.#refusal !== undefined) return;
     this.#refusal = refusal;
     this.#kill();
   }
 
+  /** Kills the agent unless its session is exactly the isolated one Tether asked for. */
+  private init(msg: StreamMessage): void {
+    const refusal = sessionProblem(msg, this.#granted);
+    if (refusal !== undefined) this.refuse(refusal);
+  }
+
   line(text: string): void {
-    let msg: StreamMessage;
-    try {
-      msg = JSON.parse(text) as StreamMessage;
-    } catch {
-      return;
-    }
-    if (msg.type === "system" && msg.subtype === "init") this.init(msg);
+    const msg = parse(text);
+    const isInit = msg?.type === "system" && msg.subtype === "init";
+    // The init line comes first: a session that does anything before describing itself is stopped.
+    if (!this.#lineSeen && !isInit) this.refuse("Claude Code did not describe its session first");
+    this.#lineSeen = true;
+    if (msg === undefined) return;
+    if (isInit) this.init(msg);
     if (msg.type === "result") this.#result = final(msg);
     if (msg.type === "assistant") this.assistant(msg);
   }
@@ -446,7 +515,7 @@ class StreamParser {
     const usage = this.usage();
     if (this.#refusal) return { kind: "refused", message: this.#refusal, usage };
     if (aborted) return { kind: "killed", usage };
-    if (!this.#initSeen) {
+    if (!this.#lineSeen) {
       return { kind: "refused", message: "Claude Code did not describe its session", usage };
     }
     return finished(this.#result, exitCode, usage);

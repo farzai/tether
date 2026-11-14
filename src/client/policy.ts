@@ -26,8 +26,12 @@ export interface Usage {
   apps: Record<string, Cap>;
 }
 
+/**
+ * WebFetch is off by default: an app's instructions could point it at loopback, LAN or
+ * cloud-metadata addresses and carry what it reads back to the app. A user can allow it.
+ */
 export const DEFAULT_POLICY: Policy = {
-  tools: ["WebSearch", "WebFetch"],
+  tools: ["WebSearch"],
   maxTaskUsd: 1,
   maxTimeoutS: 1800,
   daily: { tasks: 100, usd: 10 },
@@ -46,6 +50,22 @@ export function grantTools(requested: readonly string[], policy: Policy): Grant 
   const granted = requested.filter((tool) => policy.tools.includes(tool));
   const refused = requested.filter((tool) => !policy.tools.includes(tool));
   return { granted, refused };
+}
+
+/** Tools that reach past the task's sandbox, and what each group can reach. */
+const RISKY_TOOLS: [tools: string[], reach: string][] = [
+  [["WebFetch"], "can reach addresses on this computer and your network"],
+  [["Bash", "PowerShell"], "can run any command on this computer"],
+];
+
+/** One warning per group of granted tools that reaches past the task, for `tether start`. */
+export function policyWarnings(policy: Policy): string[] {
+  return RISKY_TOOLS.flatMap(([tools, reach]) => {
+    const granted = tools.filter((tool) => policy.tools.includes(tool));
+    return granted.length > 0
+      ? [`Your policy lets tasks use ${granted.join(", ")}, which ${reach}.`]
+      : [];
+  });
 }
 
 export interface TaskLimits {

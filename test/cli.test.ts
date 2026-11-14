@@ -357,22 +357,24 @@ describe.concurrent("tether start", () => {
     expect(h.out).toMatch(/not granted by local policy: Bash/);
   });
 
-  it("grants WebFetch only when local policy allows it, and warns at start when it does", async () => {
+  it("does not grant WebFetch by default", async () => {
     const h = await paired();
-    const denied = h.enqueue({ tools: { requested: ["WebFetch"] } });
-    const first = startTether(h);
-    await untilAsync(async () => (await h.status(denied.id)).status === "completed");
-    expect(h.out).toMatch(/not granted by local policy: WebFetch/);
-    expect(record(denied.record).argv[record(denied.record).argv.indexOf("--tools") + 1]).toBe("");
-    expect(h.err).not.toMatch(/Your policy lets tasks use/);
-    first.stop.abort();
-    await first.exit;
-
-    h.policy({ tools: ["WebSearch", "WebFetch"] });
-    const allowed = h.enqueue({ tools: { requested: ["WebFetch"] } });
+    const task = h.enqueue({ tools: { requested: ["WebFetch"] } });
     startTether(h);
-    await untilAsync(async () => (await h.status(allowed.id)).status === "completed");
-    const { argv } = record(allowed.record);
+    await untilAsync(async () => (await h.status(task.id)).status === "completed");
+    expect(h.out).toMatch(/not granted by local policy: WebFetch/);
+    const { argv } = record(task.record);
+    expect(argv[argv.indexOf("--tools") + 1]).toBe("");
+    expect(h.err).not.toMatch(/Your policy lets tasks use/);
+  });
+
+  it("grants WebFetch when local policy allows it, and warns at start", async () => {
+    const h = await paired();
+    h.policy({ tools: ["WebSearch", "WebFetch"] });
+    const task = h.enqueue({ tools: { requested: ["WebFetch"] } });
+    startTether(h);
+    await untilAsync(async () => (await h.status(task.id)).status === "completed");
+    const { argv } = record(task.record);
     expect(argv[argv.indexOf("--tools") + 1]).toBe("WebFetch");
     expect(h.err).toMatch(/Your policy lets tasks use WebFetch, which can reach/);
   });

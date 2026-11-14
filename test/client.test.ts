@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -312,6 +312,17 @@ describe("Claude Code adapter pieces", () => {
 
 describe("Store", () => {
   const store = () => new Store(mkdtempSync(join(tmpdir(), "tether-store-")));
+
+  it("creates its home as 0700 but leaves the mode of a home that already exists", () => {
+    const parent = mkdtempSync(join(tmpdir(), "tether-store-"));
+    const fresh = join(parent, "new-home");
+    new Store(fresh).addUsage("2026-11-14", "https://a.example", { tasks: 1, usd: 0 });
+    expect(statSync(fresh).mode & 0o777).toBe(0o700);
+    chmodSync(parent, 0o755);
+    new Store(parent).addUsage("2026-11-14", "https://a.example", { tasks: 1, usd: 0 });
+    expect(statSync(parent).mode & 0o777).toBe(0o755);
+    expect(statSync(join(parent, "usage.json")).mode & 0o777).toBe(0o600);
+  });
 
   it("keeps today's usage and starts over on a new day", () => {
     const s = store();

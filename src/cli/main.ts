@@ -3,6 +3,7 @@ import { hostname } from "node:os";
 import { parseArgs } from "node:util";
 import { AppClient, AppError, CLIENT, type Fetch, parseAppUrl } from "../client/app-client.ts";
 import { clean, Log, type Output, Secrets } from "../client/output.ts";
+import { policyWarnings } from "../client/policy.ts";
 import { pause } from "../client/retry.ts";
 import { type AppRecord, defaultHome, localDate, Store } from "../client/store.ts";
 import { Worker } from "../client/worker.ts";
@@ -207,7 +208,7 @@ async function start(ctx: Context, args: string[]): Promise<number> {
   if (running && isAlive(running.pid)) {
     throw new Error(`Tether is already running (pid ${running.pid}).`);
   }
-  ctx.store.policy();
+  for (const warning of policyWarnings(ctx.store.policy())) ctx.err.line(warning);
   const agentCommand = ctx.io.env.TETHER_CLAUDE_PATH || "claude";
   const agentVersion = await claudeVersion(agentCommand);
   const signal = ctx.io.signal ?? new AbortController().signal;

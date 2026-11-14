@@ -198,18 +198,21 @@ export class Worker {
     return { ...usage, total: { ...usage.total, usd: usage.total.usd + reserved }, apps };
   }
 
+  /** Why today's caps leave no room for another task of this app, or undefined if they do. */
+  private noRoom(origin: string): string | undefined {
+    const policy = this.#opts.store.policy();
+    const usage = this.usage(localDate(new Date()));
+    const budget = taskLimits({ timeout_s: 1, max_budget_usd: 1 }, policy, usage, origin).budgetUsd;
+    return (
+      capReached(policy, usage, origin) ?? (budget < 0.01 ? "daily spend cap reached" : undefined)
+    );
+  }
+
   /** Waits until today's caps leave room for a task of this app. */
   private async roomForTask(record: AppRecord, stop: AbortSignal): Promise<void> {
     let said: string | undefined;
     while (!stop.aborted) {
-      const policy = this.#opts.store.policy();
-      const usage = this.usage(localDate(new Date()));
-      const reached =
-        capReached(policy, usage, record.origin) ??
-        (taskLimits({ timeout_s: 1, max_budget_usd: 1 }, policy, usage, record.origin).budgetUsd <
-        0.01
-          ? "daily spend cap reached"
-          : undefined);
+      const reached = this.noRoom(record.origin);
       if (reached === undefined) return;
       if (reached !== said) this.#opts.log.line(`${record.name}  ${reached}; not taking tasks`);
       said = reached;
@@ -247,6 +250,14 @@ export class Worker {
       }
       // A claim that lands after shutdown began is dropped: its lease expires and the app re-offers it.
       if (!claim || stop.aborted) {
+        this.#slots.give();
+        continue;
+      }
+      // Another app's task may have used the room while this claim waited. Check again; the check
+      // and start() run in one tick, so no other claim can slip in between. Dropping the claim
+      // leaves the task queued at the app once its lease expires; failing it would be final.
+      if (this.noRoom(record.origin) !== undefined) {
+        this.#opts.log.line(`${record.name}  ${claim.task.id}  left for the app to offer again`);
         this.#slots.give();
         continue;
       }
