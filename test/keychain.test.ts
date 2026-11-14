@@ -118,6 +118,20 @@ describe("credentials without a keychain", () => {
     expect(new Store(dir, keychain).apps()).toEqual([record()]);
   });
 
+  it("says to pair again when a keychain record is read with no keychain at all", () => {
+    const dir = home();
+    new Store(dir, memoryKeychain()).saveApp(record());
+    expect(() => new Store(dir).apps()).toThrow(/Pair again: tether connect/);
+  });
+
+  it("removes an app with no keychain", () => {
+    const dir = home();
+    const store = new Store(dir);
+    store.saveApp(record());
+    store.removeApp("https://paper.example");
+    expect(store.apps()).toEqual([]);
+  });
+
   it("uses the file when there is no keychain", () => {
     const dir = home();
     expect(new Store(dir).saveApp(record())).toBe(join(dir, "credentials.json"));
@@ -183,6 +197,14 @@ describe.each([
     expect(keychain.get("https://paper.example")).toBeUndefined();
     for (const call of exec.calls) expect(call.args.join(" ")).not.toContain(SECRET);
     expect(exec.calls.some((call) => call.input?.includes(SECRET))).toBe(true);
+  });
+
+  it("reports a write it cannot read back as refused", () => {
+    const writeOnly: Run = (_, args) =>
+      ["-i", "store"].includes(args[0] ?? "")
+        ? { status: 0, stdout: "", stderr: "" }
+        : { status: 1, stdout: "", stderr: "keyring locked" };
+    expect(make("tether", writeOnly).set("https://paper.example", SECRET)).toBe(false);
   });
 
   it("reports a refused write, and a read it could not make as unavailable, not missing", () => {

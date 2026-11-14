@@ -285,13 +285,10 @@ async function start(ctx: Context, args: string[]): Promise<number> {
 /** The command's only option, `--<name> <n>`, a whole number from 1 to `max`; no positionals. */
 function parseCount(args: string[], name: string, fallback: number, max: number): number {
   try {
-    const { values, positionals } = parseArgs({
-      args,
-      allowPositionals: true,
-      options: { [name]: { type: "string" } },
-    });
+    // parseArgs is strict: an unknown option or a positional throws.
+    const { values } = parseArgs({ args, options: { [name]: { type: "string" } } });
     const n = Number(values[name] ?? fallback);
-    if (positionals.length > 0 || !Number.isInteger(n) || n < 1 || n > max) throw new Error();
+    if (!Number.isInteger(n) || n < 1 || n > max) throw new Error();
     return n;
   } catch {
     throw new UsageError(`--${name} must be a whole number from 1 to ${max}.`);

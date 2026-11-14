@@ -247,6 +247,20 @@ describe("tether service on Linux", () => {
     expect(s.err).toMatch(/daemon-reload failed: Failed to connect to bus/);
   });
 
+  it("says what systemd printed, or its exit status when it printed nothing", async () => {
+    const s = new ServiceRun("linux").connected();
+    s.answers["systemctl --user enable"] = {
+      status: 1,
+      stdout: "Unit file is masked.",
+      stderr: "",
+    };
+    expect(await s.exec("install")).toBe(1);
+    expect(s.err).toMatch(/enable failed: Unit file is masked\./);
+    s.answers["systemctl --user enable"] = { status: 5, stdout: "", stderr: "" };
+    expect(await s.exec("install")).toBe(1);
+    expect(s.err).toMatch(/enable failed: exit 5/);
+  });
+
   it("warns that an Anthropic key in the shell does not reach the service", async () => {
     const s = new ServiceRun("linux").connected();
     expect(await s.exec("install", { ANTHROPIC_API_KEY: "sk-ant-secret" })).toBe(0);

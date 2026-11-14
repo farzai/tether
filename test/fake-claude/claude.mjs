@@ -24,12 +24,19 @@ import { fileURLToPath } from "node:url";
 const args = process.argv.slice(2);
 // `tether doctor` tests run this file under other names (symlinks) to pick a broken installation:
 //   claude-signed-out  `auth status` says it is not signed in
-//   claude-old         an older version whose --help lacks --restricted
+//   claude-old         an older version whose --help lacks --restricted and that has no
+//                      `auth status`
+//   claude-newer       a newer version whose --help lists every flag Tether passes
 const variant = basename(process.argv[1] ?? "");
 const old = variant === "claude-old";
+const versions = { "claude-old": "2.0.9", "claude-newer": "2.2.0" };
 if (args[0] === "--version") {
-  process.stdout.write(`${old ? "2.0.9" : "2.1.325"} (Claude Code)\n`);
+  process.stdout.write(`${versions[variant] ?? "2.1.325"} (Claude Code)\n`);
   process.exit(0);
+}
+if (old && args[0] === "auth") {
+  process.stderr.write("error: unknown command 'auth'\n");
+  process.exit(1);
 }
 if (args[0] === "auth" && args[1] === "status") {
   const loggedIn = variant !== "claude-signed-out";

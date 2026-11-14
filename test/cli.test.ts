@@ -718,10 +718,29 @@ describe.concurrent("tether doctor", () => {
     h.extraEnv.TETHER_CLAUDE_PATH = fakeClaudeAs("claude-old");
     expect(await h.run(["doctor"])).toBe(1);
     expect(h.out).toMatch(/^FAIL {2}Flags: --restricted is not in `claude --help` of 2\.0\.9/m);
+    expect(h.out).not.toMatch(/lists every flag/);
     expect(h.out).toMatch(
       /^warn {2}Flags: --append-system-prompt-file is hidden from `claude --help`/m,
     );
     expect(h.out).not.toMatch(/--strict-mcp-config is not/);
+  });
+
+  it("passes a newer version whose --help lists every flag", async () => {
+    const h = await harness();
+    h.extraEnv.TETHER_CLAUDE_PATH = fakeClaudeAs("claude-newer");
+    await h.run(["doctor"]);
+    expect(h.out).toMatch(
+      /^ok {4}Flags: `claude --help` of 2\.2\.0 lists every flag Tether passes/m,
+    );
+    expect(h.out).toMatch(/^warn {2}Flags: --append-system-prompt-file is hidden/m);
+    expect(h.out).not.toMatch(/^FAIL {2}Flags/m);
+  });
+
+  it("says it cannot tell when an older Claude Code has no auth status", async () => {
+    const h = await harness();
+    h.extraEnv.TETHER_CLAUDE_PATH = fakeClaudeAs("claude-old");
+    expect(await h.run(["doctor"])).toBe(1);
+    expect(h.out).toMatch(/^FAIL {2}Could not tell whether Claude Code is signed in/m);
   });
 
   it("tells the user to pair again when the app no longer accepts the device", async () => {
@@ -770,6 +789,8 @@ describe.concurrent("tether logs", () => {
       /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d {2}Fake App {2}paper\.summarise {2}\S+ {2}\d+\.\d s {2}\$\d+\.\d{4} {2}complete {2}Summarise the notes$/,
     );
     expect(of(failed.id)).toMatch(/paper\.big .*fail: budget/);
+    // The test runs in seconds: a duration counted or printed wrong would show minutes or more.
+    expect(Number(/ (\d+\.\d) s /.exec(of(done.id))?.[1])).toBeLessThan(60);
     expect(statSync(join(h.home, "tasks.jsonl")).mode & 0o777).toBe(0o600);
     h.expectNoSecrets();
   });
@@ -805,6 +826,9 @@ describe.concurrent("tether logs", () => {
     expect(await h.run(["logs"])).toBe(0);
     expect(h.out).toContain("No tasks have run yet.");
     expect(await h.run(["logs", "--limit", "0"])).toBe(2);
+    expect(await h.run(["logs", "--limit", "1001"])).toBe(2);
+    expect(await h.run(["logs", "extra"])).toBe(2);
+    expect(await h.run(["logs", "--limit", "1000"])).toBe(0);
   });
 });
 

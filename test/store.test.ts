@@ -1,4 +1,4 @@
-import { appendFileSync, mkdtempSync, statSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -29,6 +29,23 @@ describe("the task log", () => {
     expect(all.length).toBeLessThanOrEqual(1000);
     expect(all.length).toBeGreaterThan(900);
     expect(statSync(file).mode & 0o777).toBe(0o600);
+  });
+
+  it("writes exactly one line per task", () => {
+    const store = new Store(mkdtempSync(join(tmpdir(), "tether-store-")));
+    store.logTask(entry(1));
+    store.logTask(entry(2));
+    const text = readFileSync(join(store.home, "tasks.jsonl"), "utf8");
+    expect(text).toBe(`${JSON.stringify(entry(1))}\n${JSON.stringify(entry(2))}\n`);
+  });
+
+  it("starts an emptied log on its first line", () => {
+    const store = new Store(mkdtempSync(join(tmpdir(), "tether-store-")));
+    writeFileSync(join(store.home, "tasks.jsonl"), "");
+    store.logTask(entry(1));
+    expect(readFileSync(join(store.home, "tasks.jsonl"), "utf8")).toBe(
+      `${JSON.stringify(entry(1))}\n`,
+    );
   });
 
   it("skips a line cut short by a crash and keeps the next one", () => {

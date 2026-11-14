@@ -51,16 +51,25 @@ async function checkAgent(deps: DoctorDeps, say: Say): Promise<void> {
   say("ok", `Claude Code ${version} (${command})`);
   const auth = await claudeCli(command, ["auth", "status", "--json"], env);
   // Only the yes or no is read: the status also names the account, which is not printed here.
-  if (signedIn(auth.stdout)) say("ok", "Claude Code is signed in");
-  else say("FAIL", "Claude Code is not signed in. Run: claude auth login");
+  const loggedIn = signedIn(auth.stdout);
+  if (loggedIn === true) say("ok", "Claude Code is signed in");
+  else if (loggedIn === false) say("FAIL", "Claude Code is not signed in. Run: claude auth login");
+  else {
+    say(
+      "FAIL",
+      "Could not tell whether Claude Code is signed in: `claude auth status --json` gave no answer",
+    );
+  }
   await checkFlags(deps, version, say);
 }
 
-function signedIn(stdout: string): boolean {
+/** `loggedIn` from `claude auth status --json`, or undefined when it printed no such answer. */
+function signedIn(stdout: string): boolean | undefined {
   try {
-    return (JSON.parse(stdout) as { loggedIn?: unknown }).loggedIn === true;
+    const loggedIn = (JSON.parse(stdout) as { loggedIn?: unknown }).loggedIn;
+    return typeof loggedIn === "boolean" ? loggedIn : undefined;
   } catch {
-    return false;
+    return undefined;
   }
 }
 

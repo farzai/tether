@@ -76,9 +76,10 @@ function reportBody(report: Report): Record<string, unknown> {
 export interface TaskResult {
   /** The reported cost, or undefined when the agent gave none (killed, refused). */
   costUsd: number | undefined;
-  /** Stopped without a report (shutdown or lost lease): the app hands the task out again. */
-  abandoned: boolean;
-  /** How it ended, for the task log: "complete", "fail: <reason>", or "left" when abandoned. */
+  /**
+   * How it ended, for the task log: "complete", "fail: <reason>", or "left" when it stopped without
+   * a report (shutdown or lost lease) and the app hands the task out again.
+   */
   ended: string;
 }
 
@@ -253,11 +254,11 @@ class TaskRun implements TaskControl {
     const reason = this.#reason;
     if (reason === "shutdown") {
       this.say("stopped; the app will offer it again");
-      return { costUsd, abandoned: true, ended: "left" };
+      return { costUsd, ended: "left" };
     }
     if (reason === "lease_lost" || reason === "unauthorized") {
       this.say("dropped: the task is no longer this device's");
-      return { costUsd, abandoned: true, ended: "left" };
+      return { costUsd, ended: "left" };
     }
     const key = report.kind === "complete" ? "task_complete" : "task_fail";
     const ended = report.kind === "complete" ? "complete" : `fail: ${report.reason}`;
@@ -279,9 +280,9 @@ class TaskRun implements TaskControl {
       );
     } catch (error) {
       this.say(`could not report the result: ${(error as Error).message}`);
-      return { costUsd, abandoned: false, ended: `${ended} (not reported)` };
+      return { costUsd, ended: `${ended} (not reported)` };
     }
-    return { costUsd, abandoned: false, ended };
+    return { costUsd, ended };
   }
 
   // Events and lease renewal
