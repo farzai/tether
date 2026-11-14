@@ -254,11 +254,7 @@ async function pollOnce(
 
 async function start(ctx: Context, args: string[]): Promise<number> {
   const concurrency = parseCount(args, "concurrency", 1, 16);
-  const refused = ctx.store.moveToKeychain();
-  const records = ctx.store.apps();
-  for (const record of records) ctx.secrets.add(record.credential);
-  for (const warning of refused) ctx.err.line(warning);
-  if (records.length === 0) throw new Error("No apps connected. Run: tether connect <app-url>");
+  const records = connectedApps(ctx);
   const running = ctx.store.runState();
   if (running && isAlive(running.pid)) {
     throw new Error(`Tether is already running (pid ${running.pid}).`);
@@ -310,6 +306,19 @@ function trimServiceLog(ctx: Context): NodeJS.Timeout | undefined {
   const timer = setInterval(trim, SERVICE_LOG_CHECK_MS);
   timer.unref();
   return timer;
+}
+
+/**
+ * The apps to run, after moving file credentials into the keychain; warns about each one the
+ * keychain refused once its credential is known to the redactor.
+ */
+function connectedApps(ctx: Context): AppRecord[] {
+  const refused = ctx.store.moveToKeychain();
+  const records = ctx.store.apps();
+  for (const record of records) ctx.secrets.add(record.credential);
+  for (const warning of refused) ctx.err.line(warning);
+  if (records.length === 0) throw new Error("No apps connected. Run: tether connect <app-url>");
+  return records;
 }
 
 /** The command's only option, `--<name> <n>`, a whole number from 1 to `max`; no positionals. */
