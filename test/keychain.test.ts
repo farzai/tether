@@ -260,6 +260,21 @@ describe("the reason a keychain gives for refusing a secret", () => {
     );
   });
 
+  it("keeps only the first line of what secret-tool printed, and says nothing more when it printed nothing", () => {
+    const chatty: Run = () => ({
+      status: 3,
+      stdout: "",
+      stderr: "No such secret collection\nat line 2\n",
+    });
+    expect(secretToolKeychain("tether", chatty).set("https://paper.example", SECRET)).toBe(
+      "secret-tool exited 3: No such secret collection",
+    );
+    const quiet: Run = () => ({ status: 3, stdout: "", stderr: "" });
+    expect(secretToolKeychain("tether", quiet).set("https://paper.example", SECRET)).toBe(
+      "secret-tool exited 3",
+    );
+  });
+
   it("says why secret-tool could not store it, from its first line of stderr", () => {
     expect(secretToolKeychain("tether", broken).set("https://paper.example", SECRET)).toBe(
       "secret-tool exited 1: Cannot autolaunch D-Bus without X11",

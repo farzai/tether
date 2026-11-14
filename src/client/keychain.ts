@@ -86,7 +86,10 @@ export function secretToolKeychain(service: string, exec: Run = run): Keychain {
       const done = exec("secret-tool", args, secret);
       if (done.status !== 0) {
         // The secret went only to stdin, which secret-tool does not echo; its stderr says why.
-        const why = done.stderr.trim().split("\n")[0]?.slice(0, 200);
+        const why = done.stderr
+          .trim()
+          .replace(/\n[\s\S]*/, "")
+          .slice(0, 200);
         return `secret-tool exited ${done.status ?? "timeout"}${why ? `: ${why}` : ""}`;
       }
       return readBack(keychain, origin, secret);
