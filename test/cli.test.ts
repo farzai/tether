@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterEach, describe, expect, it } from "vitest";
 import { main } from "../src/cli/main.ts";
+import { Store } from "../src/client/store.ts";
 import { type FakeApp, type FakeAppOptions, startFakeApp } from "./fake-app/server.ts";
 
 const FAKE_CLAUDE = new URL("./fake-claude/claude.mjs", import.meta.url).pathname;
@@ -66,6 +67,10 @@ class Harness {
     const code = await until(() => /([B-Z]{4}-[B-Z]{4})/.exec(this.out)?.[1]);
     expect(this.app.approvePairing(code)).toBe(true);
     return done;
+  }
+
+  store(): Store {
+    return new Store(this.home);
   }
 
   credential(): string {
@@ -194,6 +199,12 @@ describe("tether connect", () => {
     expect(existsSync(join(h.home, "credentials.json"))).toBe(false);
   });
 
+  it("stops when the code expires before anyone answers", async () => {
+    const h = await harness({ pairExpiresS: 1 });
+    expect(await h.run(["connect", h.app.url])).toBe(1);
+    expect(h.err).toMatch(/code expired/);
+  });
+
   it("refuses an app whose discovery names an endpoint on another site", async () => {
     const h = await harness({ misbehave: { endpoints: { heartbeat: "https://evil.example/hb" } } });
     expect(await h.run(["connect", h.app.url])).toBe(1);
@@ -231,6 +242,35 @@ describe("tether apps, status and disconnect", () => {
     expect(h.out).toMatch(/not running/);
     expect(h.out).toMatch(/0 of 100 tasks/);
     h.expectNoSecrets();
+  });
+
+  it("adds 5 seconds to the poll interval after slow_down", async () => {
+    const h = await harness({ pairIntervalS: 2 });
+    h.rewrite["/pair/start"] = (body) => ({ ...body, interval: 1 });
+    const done = h.run(["connect", h.app.url]);
+    const polls = () => h.sent.filter((s) => s.path.endsWith("/pair/poll"));
+    await until(() => polls().length >= 2, 5_000);
+    const second = Date.now();
+    const code = /([B-Z]{4}-[B-Z]{4})/.exec(h.out)?.[1] as string;
+    h.app.approvePairing(code);
+    expect(await done).toBe(0);
+    expect(Date.now() - second).toBeGreaterThanOrEqual(5_500);
+  });
+
+  it("disconnects an app named by its name", async () => {
+    const h = await paired();
+    expect(await h.run(["disconnect", "Fake App"])).toBe(0);
+    expect(await h.run(["disconnect", "Fake App"])).toBe(1);
+    expect(h.err).toMatch(/No connected app matches/);
+  });
+
+  it("forgets the app even when it cannot be reached, and says to revoke it there", async () => {
+    const h = await paired();
+    await h.app.close();
+    expect(await h.run(["disconnect", h.app.url])).toBe(0);
+    expect(h.err).toMatch(/Revoke it on the app's device page/);
+    expect(h.store().apps()).toEqual([]);
+    h.app = await startFakeApp();
   });
 
   it("revokes the device before forgetting it", async () => {
@@ -396,6 +436,9 @@ describe("tether start", () => {
     const h = await paired();
     startTether(h);
     await until(() => /online/.test(h.out));
+    h.out = "";
+    expect(await h.run(["status"])).toBe(0);
+    expect(h.out).toMatch(/Tether is running/);
     expect(await h.run(["start"])).toBe(1);
     expect(h.err).toMatch(/already running/);
   });

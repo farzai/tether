@@ -163,6 +163,30 @@ async function send(
   label: string,
   options: CallOptions,
 ): Promise<unknown> {
+  const { res, text } = await exchange(fetchFn, method, url, label, options);
+  if (res.status >= 300 && res.status < 400) {
+    throw new AppError(
+      "refused",
+      `${label}: the app answered with a redirect, which Tether refuses`,
+    );
+  }
+  const body = parseJson(text);
+  if (res.status === 204) return undefined;
+  if (res.status !== 200 && res.status !== 201) throw failureFor(res, body, label);
+  if (options.schema && !validate(options.schema, body).ok) {
+    throw new AppError("retry", `${label}: the app's answer does not match the protocol`);
+  }
+  return body;
+}
+
+/** One HTTP round trip that never follows a redirect; a network failure becomes `retry`. */
+async function exchange(
+  fetchFn: Fetch,
+  method: "GET" | "POST",
+  url: string,
+  label: string,
+  options: CallOptions,
+): Promise<{ res: Response; text: string }> {
   const headers: Record<string, string> = { "user-agent": `tether/${CLIENT.version}` };
   if (options.credential !== undefined) headers.authorization = `Bearer ${options.credential}`;
   const timeout = AbortSignal.timeout(options.timeoutMs ?? REQUEST_TIMEOUT_MS);
@@ -176,31 +200,13 @@ async function send(
     headers["content-type"] = "application/json";
     init.body = JSON.stringify(options.body);
   }
-  let res: Response;
-  let text: string;
   try {
-    res = await fetchFn(url, init);
-    text = await res.text();
+    const res = await fetchFn(url, init);
+    return { res, text: await res.text() };
   } catch (error) {
     if (options.signal?.aborted) throw error;
     throw new AppError("retry", `${label}: could not reach the app (${networkCause(error)})`);
   }
-  if (res.status >= 300 && res.status < 400) {
-    throw new AppError(
-      "refused",
-      `${label}: the app answered with a redirect, which Tether refuses`,
-    );
-  }
-  const body = parseJson(text);
-  if (res.status === 204) return undefined;
-  if (res.status !== 200 && res.status !== 201) throw failureFor(res, body, label);
-  if (options.schema) {
-    const check = validate(options.schema, body);
-    if (!check.ok) {
-      throw new AppError("retry", `${label}: the app's answer does not match the protocol`);
-    }
-  }
-  return body;
 }
 
 /** Names a network failure without echoing anything the server sent. */

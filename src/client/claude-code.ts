@@ -234,10 +234,17 @@ function execute(
   const lines = createInterface({ input: child.stdout as NodeJS.ReadableStream });
   lines.on("line", (line) => stream.line(line));
   return new Promise<Outcome>((resolve) => {
-    child.on("error", () => resolve(stream.outcome(null, options.signal.aborted, true)));
+    child.on("error", () =>
+      resolve({
+        kind: "error",
+        exitCode: null,
+        message: "Claude Code could not be started",
+        usage: stream.usage(),
+      }),
+    );
     child.on("close", (code) => {
       options.signal.removeEventListener("abort", stop);
-      resolve(stream.outcome(code, options.signal.aborted, false));
+      resolve(stream.outcome(code, options.signal.aborted));
     });
   });
 }
@@ -327,13 +334,50 @@ export function sessionProblem(init: StreamMessage, granted: string[]): string |
   return undefined;
 }
 
+/** The result line of a session, parsed once. */
+interface Final {
+  subtype: string;
+  isError: boolean;
+  text: string;
+  costUsd: number | undefined;
+}
+
+function final(msg: StreamMessage): Final {
+  return {
+    subtype: String(msg.subtype),
+    isError: msg.is_error === true,
+    text: typeof msg.result === "string" ? msg.result : "",
+    costUsd: typeof msg.total_cost_usd === "number" ? msg.total_cost_usd : undefined,
+  };
+}
+
+/** How a session that ran to its end went, from its result line and exit code. */
+function finished(result: Final | undefined, exitCode: number | null, usage: Usage): Outcome {
+  if (result === undefined) {
+    return {
+      kind: "error",
+      exitCode,
+      message: `Claude Code exited with code ${exitCode} (no result)`,
+      usage,
+    };
+  }
+  if (result.subtype === "error_max_budget_usd") {
+    return { kind: "budget", exitCode, message: "The task reached its budget", usage };
+  }
+  if (result.subtype === "success" && exitCode === 0 && !result.isError) {
+    return { kind: "success", exitCode, summary: result.text.slice(0, 2000), usage };
+  }
+  const message = `Claude Code exited with code ${exitCode} (${result.subtype})`;
+  return { kind: "error", exitCode, message, usage };
+}
+
 /** Folds stream-json lines into events, running usage and the final result. */
 class StreamParser {
   readonly #onEvent: (event: AgentEvent) => void;
   readonly #granted: string[];
   readonly #kill: () => void;
   readonly #counted = new Map<string, Usage>();
-  #result: StreamMessage | undefined;
+  #result: Final | undefined;
   #initSeen = false;
   #refusal: string | undefined;
 
@@ -360,7 +404,7 @@ class StreamParser {
       return;
     }
     if (msg.type === "system" && msg.subtype === "init") this.#init(msg);
-    if (msg.type === "result") this.#result = msg;
+    if (msg.type === "result") this.#result = final(msg);
     if (msg.type === "assistant") this.#assistant(msg);
   }
 
@@ -388,33 +432,17 @@ class StreamParser {
       sum.cache_read_tokens += u.cache_read_tokens;
       sum.cache_write_tokens += u.cache_write_tokens;
     }
-    const cost = this.#result?.total_cost_usd;
+    const cost = this.#result?.costUsd;
     return typeof cost === "number" ? { ...sum, cost_usd: cost } : sum;
   }
 
-  outcome(exitCode: number | null, aborted: boolean, spawnFailed: boolean): Outcome {
+  outcome(exitCode: number | null, aborted: boolean): Outcome {
     const usage = this.usage();
     if (this.#refusal) return { kind: "refused", message: this.#refusal, usage };
     if (aborted) return { kind: "killed", usage };
-    const result = this.#result;
-    if (spawnFailed) {
-      return { kind: "error", exitCode, message: "Claude Code could not be started", usage };
-    }
-    if (result?.subtype === "error_max_budget_usd") {
-      return { kind: "budget", exitCode, message: "The task reached its budget", usage };
-    }
     if (!this.#initSeen) {
       return { kind: "refused", message: "Claude Code did not describe its session", usage };
     }
-    if (result?.subtype === "success" && result.is_error !== true && exitCode === 0) {
-      return { kind: "success", exitCode, summary: (result.result ?? "").slice(0, 2000), usage };
-    }
-    const why = result?.subtype ? ` (${result.subtype})` : " without a result";
-    return {
-      kind: "error",
-      exitCode,
-      message: `Claude Code exited with code ${exitCode}${why}`,
-      usage,
-    };
+    return finished(this.#result, exitCode, usage);
   }
 }

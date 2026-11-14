@@ -41,6 +41,26 @@ interface Context {
 
 class UsageError extends Error {}
 
+type Command = (ctx: Context, args: string[]) => number | Promise<number>;
+
+const COMMANDS: Record<string, Command> = {
+  connect: (ctx, args) => connect(ctx, oneArg(args)),
+  start: (ctx, args) => start(ctx, args),
+  status: (ctx, args) => {
+    noArgs(args);
+    return status(ctx);
+  },
+  apps: (ctx, args) => {
+    noArgs(args);
+    return apps(ctx);
+  },
+  disconnect: (ctx, args) => disconnect(ctx, oneArg(args)),
+};
+
+function noArgs(args: string[]): void {
+  if (args.length > 0) throw new UsageError();
+}
+
 /** Runs one tether command; resolves to its exit status (0 ok, 1 failed, 2 usage error). */
 export async function main(argv: string[], io: Io): Promise<number> {
   const secrets = new Secrets();
@@ -52,22 +72,11 @@ export async function main(argv: string[], io: Io): Promise<number> {
     err: new Log(io.stderr, secrets),
     fetch: io.fetch ?? fetch,
   };
-  const [command, ...rest] = argv;
+  const [command = "", ...rest] = argv;
   try {
-    switch (command) {
-      case "connect":
-        return await connect(ctx, oneArg(rest));
-      case "start":
-        return await start(ctx, rest);
-      case "status":
-        return status(ctx);
-      case "apps":
-        return apps(ctx);
-      case "disconnect":
-        return await disconnect(ctx, oneArg(rest));
-      default:
-        throw new UsageError();
-    }
+    const run = Object.hasOwn(COMMANDS, command) ? COMMANDS[command] : undefined;
+    if (!run) throw new UsageError();
+    return await run(ctx, rest);
   } catch (error) {
     if (error instanceof UsageError) {
       if (error.message) ctx.err.line(error.message);
@@ -146,6 +155,8 @@ async function connect(ctx: Context, value: string): Promise<number> {
   return 0;
 }
 
+const EXPIRED = "The code expired. Run tether connect again.";
+
 async function pollPairing(
   ctx: Context,
   client: AppClient,
@@ -153,15 +164,16 @@ async function pollPairing(
 ): Promise<Extract<PairPoll, { status: "approved" }>> {
   const deadline = Date.now() + started.expires_in * 1000;
   const wait = { intervalMs: started.interval * 1000, failures: 0 };
-  while (Date.now() < deadline) {
+  while (Date.now() < deadline && !ctx.io.signal?.aborted) {
     await pause(wait.intervalMs, ctx.io.signal);
-    if (ctx.io.signal?.aborted) throw new Error("stopped");
     const reply = await pollOnce(client, started.device_code, wait);
-    if (reply?.status === "approved") return reply;
-    if (reply?.status === "denied") throw new Error("The pairing was denied on the app's page.");
-    if (reply?.status === "expired") break;
+    if (reply === undefined || reply.status === "pending") continue;
+    if (reply.status === "approved") return reply;
+    throw new Error(
+      reply.status === "denied" ? "The pairing was denied on the app's page." : EXPIRED,
+    );
   }
-  throw new Error("The code expired. Run tether connect again.");
+  throw new Error(EXPIRED);
 }
 
 /** One poll; undefined when it must be retried, with `wait` lengthened as RFC 8628 says. */
@@ -290,11 +302,18 @@ function apps(ctx: Context): number {
   return 0;
 }
 
+/** The app named by its URL, or by its name when that is unambiguous. */
 function findApp(ctx: Context, value: string): AppRecord {
   const records = ctx.store.apps();
-  const origin = URL.canParse(value) ? URL.parse(value)?.origin : undefined;
-  const found = records.find((app) => app.origin === origin || app.name === value);
+  const url = URL.parse(value);
+  const matches = url
+    ? records.filter((app) => app.origin === url.origin)
+    : records.filter((app) => app.name === value);
+  const [found, ...others] = matches;
   if (!found) throw new Error(`No connected app matches "${clean(value, 200)}". See: tether apps`);
+  if (others.length > 0) {
+    throw new Error(`More than one app is named "${clean(value, 200)}". Use its URL instead.`);
+  }
   return found;
 }
 
