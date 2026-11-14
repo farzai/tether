@@ -535,6 +535,15 @@ const outcomeChecks: Check[] = [
     expectError(await fail(ctx, task.id, lease.id, "bogus"), 400, "invalid_request");
     await expectReport(fail(ctx, task.id, lease.id), "task-fail.response", "failed");
   }),
+  outcome("fail accepts a cause, a retry time and a cause it does not know", async (ctx) => {
+    const reported = async (body: Record<string, unknown>) => {
+      const { task, lease } = await enqueueAndClaim(ctx);
+      const sent = { lease_id: lease.id, reason: "agent_error", ...body };
+      await expectReport(taskCall(ctx, "task_fail", task.id, sent), "task-fail.response", "failed");
+    };
+    await reported({ cause: "rate_limit", retry_at: "2026-11-14T15:00:00Z" });
+    await reported({ cause: "a_cause_from_a_later_client" });
+  }),
   outcome("cancel reaches the client", async (ctx) => {
     const { task, lease } = await enqueueAndClaim(ctx);
     await cancelTask(ctx, task.id);

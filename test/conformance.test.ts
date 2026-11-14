@@ -210,7 +210,7 @@ describe.concurrent("conformance command", () => {
 
   it("exits 0 when every check passes, with the secret from the environment", async () => {
     const result = await withHooks({}, (url) => run([url], { TETHER_CONFORMANCE_SECRET: SECRET }));
-    expect(result.stdout).toContain("32 passed, 0 failed, 0 skipped");
+    expect(result.stdout).toContain("33 passed, 0 failed, 0 skipped");
     expect(result.status).toBe(0);
   });
 

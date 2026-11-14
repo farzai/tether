@@ -60,7 +60,11 @@ export interface Misbehaviour extends Omit<StateMisbehaviour, "claimAnyUser"> {
   appLinks?: { icon?: string; url?: string };
   /** Advertise these values in discovery's `endpoints` instead of the real paths. */
   endpoints?: Partial<Record<RouteKey, string>>;
+  /** Refuse a fail whose `cause` is not one this version of the protocol lists. */
+  knownCausesOnly?: boolean;
 }
+
+const KNOWN_CAUSES = ["rate_limit", "auth_failed", "billing", "provider_error"];
 
 type Auth = "none" | "device" | "hook" | "hook+device";
 
@@ -223,7 +227,17 @@ function buildRoutes(state: FakeState, opts: FakeAppOptions): Route[] {
       "POST",
       "device",
       "task-fail.request",
-      withTask("task_fail", (t, ctx) => state.finish(t, leaseId(ctx), "failed")),
+      withTask("task_fail", (t, ctx) => {
+        const { cause } = ctx.body;
+        if (
+          opts.misbehave.knownCausesOnly &&
+          cause !== undefined &&
+          !KNOWN_CAUSES.includes(cause as string)
+        ) {
+          return errorReply(400, "invalid_request", "Unknown cause.");
+        }
+        return state.finish(t, leaseId(ctx), "failed");
+      }),
     ),
     route("revoke", "POST", "device", undefined, (ctx) => state.revoke(ctx.device)),
     route("pair_approve", "POST", "hook", "conformance-pair.request", (ctx) =>
