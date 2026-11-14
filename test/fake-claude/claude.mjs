@@ -71,6 +71,13 @@ for (const line of lines) {
 }
 if (fake.hang) setInterval(() => {}, 1000);
 else {
-  const result = lines.map((line) => JSON.parse(line)).find((msg) => msg.type === "result");
+  const parse = (line) => {
+    try {
+      return JSON.parse(line);
+    } catch {
+      return undefined;
+    }
+  };
+  const result = lines.map(parse).find((msg) => msg?.type === "result");
   process.exitCode = fake.exit_code ?? (result?.is_error ? 1 : 0);
 }

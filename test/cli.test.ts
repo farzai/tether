@@ -478,6 +478,16 @@ describe.concurrent("tether start", () => {
     expect(await h.status(second.id)).toMatchObject({ status: "queued", attempts: 0 });
   });
 
+  it("still runs a task when exactly one cent of today's spend cap is left", async () => {
+    const h = await paired();
+    h.policy({ daily: { tasks: 10, usd: 0.01 } });
+    const task = h.enqueue({});
+    startTether(h);
+    await untilAsync(async () => (await h.status(task.id)).status === "completed");
+    const { argv } = record(task.record);
+    expect(argv[argv.indexOf("--max-budget-usd") + 1]).toBe("0.01");
+  });
+
   it("rechecks the daily cap when a claim lands, so two apps cannot both pass it", async () => {
     const h = await paired();
     const other = await paired();

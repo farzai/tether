@@ -57,7 +57,7 @@ describe("runClaudeCode", () => {
     expect(disallowed).not.toContain("WebSearch");
   });
 
-  it("reads sparse lines: missing ids, fields and text count as nothing", async () => {
+  it("reads sparse lines: bad lines, missing ids, fields and text count as nothing", async () => {
     const { outcome, events } = await run({ fixture: "sparse" });
     expect(outcome).toMatchObject({ kind: "success", summary: "Done." });
     expect(outcome.usage).toEqual({

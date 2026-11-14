@@ -218,7 +218,7 @@ function prepare(task: AgentTask): { dir: string; work: string } {
  */
 export function removeDir(dir: string, rm: typeof rmSync = rmSync): void {
   try {
-    rm(dir, { recursive: true, force: true, maxRetries: 3 });
+    rm(dir, { recursive: true, maxRetries: 3 });
   } catch {
     // Left behind; the outcome still reaches the app.
   }
