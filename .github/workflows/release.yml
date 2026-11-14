@@ -1,0 +1,91 @@
+name: Release
+
+# A dry run for now: it builds every binary and its checksum and keeps them as workflow artifacts.
+# It creates no GitHub Release and publishes nothing to npm. Tags trigger it once publishing is set up.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+
+permissions:
+  contents: read
+
+jobs:
+  binaries:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - name: Build
+        run: |
+          mkdir dist
+          for target in darwin-arm64 darwin-x64 linux-x64 linux-arm64 windows-x64; do
+            suffix=""
+            if [ "$target" = windows-x64 ]; then suffix=".exe"; fi
+            bun build --compile --minify --target="bun-$target" src/cli/bin.ts \
+              --outfile "dist/tether-$target$suffix"
+          done
+      - name: Smoke test the Linux x64 binary
+        run: |
+          out="$(TETHER_HOME="$RUNNER_TEMP/home" dist/tether-linux-x64 apps)"
+          echo "$out"
+          echo "$out" | grep -q "No apps connected"
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum tether-* > SHA256SUMS && cat SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tether-binaries
+          path: dist/
+          if-no-files-found: error
+
+  # The Windows binary on Windows: it starts, finds no agent, and installs and removes a real
+  # Task Scheduler task whose tether start runs and stops at the missing agent.
+  windows-smoke:
+    needs: binaries
+    runs-on: windows-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      TETHER_CLAUDE_PATH: C:\no-such-claude.exe
+    steps:
+      - run: Add-Content $env:GITHUB_ENV "TETHER_HOME=$env:RUNNER_TEMP\tether-home"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: tether-binaries
+          path: dist
+      - name: Run commands
+        run: |
+          $tether = "dist\tether-windows-x64.exe"
+          & $tether apps | Tee-Object -Variable apps
+          if ("$apps" -notmatch "No apps connected") { throw "apps" }
+          & $tether doctor | Tee-Object -Variable doctor
+          if ($LASTEXITCODE -ne 1 -or "$doctor" -notmatch "FAIL  Claude Code was not found") { throw "doctor" }
+          # doctor's exit status 1 is the expected one; do not let it end the step.
+          exit 0
+      - name: Install and remove the service
+        run: |
+          $tether = (Resolve-Path "dist\tether-windows-x64.exe").Path
+          New-Item -ItemType Directory -Force $env:TETHER_HOME | Out-Null
+          $app = @{ origin = "https://tether-smoke.invalid"; name = "Smoke"; device = @{ id = "dev_1"; name = "CI" }; account = "CI"; credential = "not-a-real-credential"; pairedAt = "2026-11-14T00:00:00.000Z" }
+          @{ apps = @($app) } | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 "$env:TETHER_HOME\credentials.json"
+          & $tether service install
+          if ($LASTEXITCODE -ne 0) { throw "install" }
+          & $tether service status | Tee-Object -Variable status
+          if ("$status" -notmatch "installed") { throw "status" }
+          # The task ran tether start through its wrapper, with TETHER_HOME and TETHER_CLAUDE_PATH
+          # carried: start writes to the home's service.log that it cannot find this smoke's agent.
+          $log = "$env:TETHER_HOME\service.log"
+          for ($i = 0; $i -lt 30 -and -not (Select-String -Quiet -Path $log -Pattern "Claude Code was not found" -ErrorAction SilentlyContinue); $i++) { Start-Sleep -Seconds 1 }
+          Get-Content $log -ErrorAction SilentlyContinue
+          if (-not (Select-String -Quiet -Path $log -Pattern "Claude Code was not found")) { throw "the task did not run tether start" }
+          & $tether service uninstall
+          & $tether service status | Tee-Object -Variable after
+          if ("$after" -notmatch "not installed") { throw "uninstall" }

@@ -18,12 +18,54 @@
 // "$TOOLS" in a fixture's init line becomes the tools from --tools, "$CWD" the working directory.
 import { spawn } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const args = process.argv.slice(2);
+// `tether doctor` tests run this file under other names (symlinks) to pick a broken installation:
+//   claude-signed-out  `auth status` says it is not signed in
+//   claude-old         an older version whose --help lacks --restricted and that has no
+//                      `auth status`
+//   claude-newer       a newer version whose --help lists every flag Tether passes
+const variant = basename(process.argv[1] ?? "");
+const old = variant === "claude-old";
+const versions = { "claude-old": "2.0.9", "claude-newer": "2.2.0" };
 if (args[0] === "--version") {
-  process.stdout.write("2.1.325 (Claude Code)\n");
+  process.stdout.write(`${versions[variant] ?? "2.1.325"} (Claude Code)\n`);
+  process.exit(0);
+}
+if (old && args[0] === "auth") {
+  process.stderr.write("error: unknown command 'auth'\n");
+  process.exit(1);
+}
+if (args[0] === "auth" && args[1] === "status") {
+  const loggedIn = variant !== "claude-signed-out";
+  process.stdout.write(
+    `${JSON.stringify({ loggedIn, authMethod: loggedIn ? "claude.ai" : "none" })}\n`,
+  );
+  process.exit(loggedIn ? 0 : 1);
+}
+if (args[0] === "--help") {
+  // As Claude Code 2.1.325 prints it: --append-system-prompt-file is a hidden option.
+  const options = [
+    "-p, --print",
+    "--output-format <format>",
+    "--verbose",
+    "--mcp-config <configs...>",
+    "--strict-mcp-config",
+    ...(old ? [] : ["--restricted"]),
+    "--tools <tools...>",
+    "--allowedTools, --allowed-tools <tools...>",
+    "--disallowedTools, --disallowed-tools <tools...>",
+    "--permission-mode <mode>",
+    "--max-budget-usd <amount>",
+    "--no-session-persistence",
+    "--setting-sources <sources>",
+    "--disable-slash-commands",
+  ];
+  process.stdout.write(
+    `Usage: claude [options]\n\nOptions:\n${options.map((o) => `  ${o}  text`).join("\n")}\n`,
+  );
   process.exit(0);
 }
 

@@ -1,10 +1,19 @@
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, describe, expect, it } from "vitest";
 import { main } from "../src/cli/main.ts";
+import type { Keychain } from "../src/client/keychain.ts";
 import { type AppRecord, Store } from "../src/client/store.ts";
 import { type FakeApp, type FakeAppOptions, startFakeApp } from "./fake-app/server.ts";
 
@@ -27,6 +36,8 @@ class Harness {
   err = "";
   app!: FakeApp;
   extraEnv: Record<string, string> = {};
+  /** A keychain for credentials; without one, credentials stay in credentials.json. */
+  keychain: Keychain | undefined;
   /** Rewrites a response body before Tether sees it, keyed by endpoint path suffix. */
   rewrite: Record<string, (body: Record<string, unknown>) => unknown> = {};
 
@@ -60,12 +71,14 @@ class Harness {
         PATH: process.env.PATH,
         HOME: process.env.HOME,
         GH_TOKEN: "must-not-reach-the-agent",
+        TETHER_KEYCHAIN: "off",
         ...this.extraEnv,
       },
       stdout: { write: (text: string) => (this.out += text) },
       stderr: { write: (text: string) => (this.err += text) },
       fetch: this.fetch as typeof fetch,
       ...(signal ? { signal } : {}),
+      ...(this.keychain ? { keychain: this.keychain } : {}),
     });
   }
 
@@ -197,6 +210,25 @@ describe.concurrent("tether connect", () => {
     expect(statSync(file).mode & 0o777).toBe(0o600);
     expect(statSync(h.home).mode & 0o777).toBe(0o700);
     expect(h.credential()).toMatch(/^tdc_/);
+    h.expectNoSecrets();
+  });
+
+  it("keeps the credential in the keychain when there is one, and runs tasks with it", async () => {
+    const h = await harness();
+    const items = new Map<string, string>();
+    h.keychain = {
+      name: "the test keychain",
+      get: (origin) => items.get(origin),
+      set: (origin, secret) => items.set(origin, secret) !== undefined,
+      delete: (origin) => items.delete(origin),
+    };
+    expect(await h.connect()).toBe(0);
+    expect(h.out).toContain("The device credential is in the test keychain.");
+    const [credential] = items.values();
+    expect(credential).toMatch(/^tdc_/);
+    expect(readFileSync(join(h.home, "credentials.json"), "utf8")).not.toContain(credential);
+    expect(await h.run(["disconnect", h.app.url])).toBe(0);
+    expect(items.size).toBe(0);
     h.expectNoSecrets();
   });
 
@@ -644,6 +676,161 @@ function startBin(h: Harness) {
   });
   return { child, exit, stderr: () => err };
 }
+
+/** The fake claude under another name, which picks a broken installation (see claude.mjs). */
+function fakeClaudeAs(name: string): string {
+  const dir = mkdtempSync(join(tmpdir(), "tether-test-claude-"));
+  symlinkSync(FAKE_CLAUDE, join(dir, name));
+  return join(dir, name);
+}
+
+describe.concurrent("tether doctor", () => {
+  it("passes a signed-in Claude Code of the checked version and a reachable app", async () => {
+    const h = await paired();
+    h.out = "";
+    expect(await h.run(["doctor"])).toBe(0);
+    expect(h.out).toMatch(/^ok {4}Claude Code 2\.1\.325/m);
+    expect(h.out).toMatch(/^ok {4}Claude Code is signed in/m);
+    expect(h.out).toMatch(/^ok {4}Flags: .*2\.1\.325/m);
+    expect(h.out).toMatch(/^ok {4}Fake App .*accepts this device/m);
+    expect(h.out).not.toMatch(/^FAIL/m);
+    expect(h.sent.at(-1)?.path).toMatch(/\/tasks\//);
+    h.expectNoSecrets();
+  });
+
+  it("reports a missing agent CLI clearly and fails", async () => {
+    const h = await harness();
+    h.extraEnv.TETHER_CLAUDE_PATH = join(h.scratch, "no-such-claude");
+    expect(await h.run(["doctor"])).toBe(1);
+    expect(h.out).toMatch(/^FAIL {2}Claude Code was not found at .*no-such-claude\. Install it/m);
+    expect(h.out).not.toMatch(/signed in/);
+  });
+
+  it("reports a signed-out agent CLI clearly and fails", async () => {
+    const h = await harness();
+    h.extraEnv.TETHER_CLAUDE_PATH = fakeClaudeAs("claude-signed-out");
+    expect(await h.run(["doctor"])).toBe(1);
+    expect(h.out).toMatch(/^FAIL {2}Claude Code is not signed in\. Run: claude auth login/m);
+  });
+
+  it("fails a flag the installed version does not list, and only warns about a hidden one", async () => {
+    const h = await harness();
+    h.extraEnv.TETHER_CLAUDE_PATH = fakeClaudeAs("claude-old");
+    expect(await h.run(["doctor"])).toBe(1);
+    expect(h.out).toMatch(/^FAIL {2}Flags: --restricted is not in `claude --help` of 2\.0\.9/m);
+    expect(h.out).not.toMatch(/lists every flag/);
+    expect(h.out).toMatch(
+      /^warn {2}Flags: --append-system-prompt-file is hidden from `claude --help`/m,
+    );
+    expect(h.out).not.toMatch(/--strict-mcp-config is not/);
+  });
+
+  it("passes a newer version whose --help lists every flag", async () => {
+    const h = await harness();
+    h.extraEnv.TETHER_CLAUDE_PATH = fakeClaudeAs("claude-newer");
+    await h.run(["doctor"]);
+    expect(h.out).toMatch(
+      /^ok {4}Flags: `claude --help` of 2\.2\.0 lists every flag Tether passes/m,
+    );
+    expect(h.out).toMatch(/^warn {2}Flags: --append-system-prompt-file is hidden/m);
+    expect(h.out).not.toMatch(/^FAIL {2}Flags/m);
+  });
+
+  it("says it cannot tell when an older Claude Code has no auth status", async () => {
+    const h = await harness();
+    h.extraEnv.TETHER_CLAUDE_PATH = fakeClaudeAs("claude-old");
+    expect(await h.run(["doctor"])).toBe(1);
+    expect(h.out).toMatch(/^FAIL {2}Could not tell whether Claude Code is signed in/m);
+  });
+
+  it("tells the user to pair again when the app no longer accepts the device", async () => {
+    const h = await paired();
+    await fetch(`${h.app.url}/tether/v1/devices/revoke`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${h.credential()}` },
+    });
+    expect(await h.run(["doctor"])).toBe(1);
+    expect(h.out).toMatch(/^FAIL {2}Fake App .*Pair again: tether connect/m);
+    h.expectNoSecrets();
+  });
+
+  it("reports an app it cannot reach", async () => {
+    const h = await paired();
+    h.intercept["/.well-known/tether"] = () => new Response("down", { status: 503 });
+    expect(await h.run(["doctor"])).toBe(1);
+    expect(h.out).toMatch(/^FAIL {2}Fake App .*could not be reached/m);
+  });
+
+  it("says when no app is connected, without failing", async () => {
+    const h = await harness();
+    expect(await h.run(["doctor"])).toBe(0);
+    expect(h.out).toMatch(/^warn {2}No apps connected/m);
+  });
+});
+
+describe.concurrent("tether logs", () => {
+  it("lists each finished task with app, type, duration, cost and how it ended", async () => {
+    const h = await paired();
+    const done = h.enqueue({ type: "paper.summarise", title: "Summarise the notes" });
+    const failed = h.enqueue(
+      { type: "paper.big", limits: { timeout_s: 60, max_budget_usd: 0.5 } },
+      { fixture: "budget" },
+    );
+    const { exit, stop } = startTether(h);
+    await untilAsync(async () => (await h.status(done.id)).status === "completed");
+    await untilAsync(async () => (await h.status(failed.id)).status === "failed");
+    stop.abort();
+    await exit;
+    h.out = "";
+    expect(await h.run(["logs"])).toBe(0);
+    const lines = h.out.trim().split("\n");
+    const of = (id: string) => lines.find((line) => line.includes(id)) ?? "";
+    expect(of(done.id)).toMatch(
+      /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d {2}Fake App {2}paper\.summarise {2}\S+ {2}\d+\.\d s {2}\$\d+\.\d{4} {2}complete {2}Summarise the notes$/,
+    );
+    expect(of(failed.id)).toMatch(/paper\.big .*fail: budget/);
+    // The test runs in seconds: a duration counted or printed wrong would show minutes or more.
+    expect(Number(/ (\d+\.\d) s /.exec(of(done.id))?.[1])).toBeLessThan(60);
+    expect(statSync(join(h.home, "tasks.jsonl")).mode & 0o777).toBe(0o600);
+    h.expectNoSecrets();
+  });
+
+  it("logs a task left to the app on shutdown as left", async () => {
+    const h = await paired();
+    const task = h.enqueue({}, { hang: true });
+    const { exit, stop } = startTether(h);
+    await until(() => existsSync(task.record));
+    stop.abort();
+    await exit;
+    h.out = "";
+    expect(await h.run(["logs", "--limit", "1"])).toBe(0);
+    expect(h.out).toMatch(
+      new RegExp(`${task.id} {2}\\d+\\.\\d s {2}(\\$\\d+\\.\\d{4}|-) {2}left {2}`),
+    );
+  });
+
+  it("cleans what the app wrote before printing it", async () => {
+    const h = await paired();
+    const task = h.enqueue({ title: "evil\u001b[2Jtitle" });
+    const { exit, stop } = startTether(h);
+    await untilAsync(async () => (await h.status(task.id)).status === "completed");
+    stop.abort();
+    await exit;
+    h.out = "";
+    await h.run(["logs"]);
+    expect(h.out).not.toContain("\u001b");
+  });
+
+  it("says when there is nothing to show, and refuses a bad limit", async () => {
+    const h = await harness();
+    expect(await h.run(["logs"])).toBe(0);
+    expect(h.out).toContain("No tasks have run yet.");
+    expect(await h.run(["logs", "--limit", "0"])).toBe(2);
+    expect(await h.run(["logs", "--limit", "1001"])).toBe(2);
+    expect(await h.run(["logs", "extra"])).toBe(2);
+    expect(await h.run(["logs", "--limit", "1000"])).toBe(0);
+  });
+});
 
 describe.concurrent("tether start, stopped by a signal", () => {
   it("stops on SIGHUP as on Ctrl-C: the agent is stopped and the lease is left to expire", async () => {

@@ -1,14 +1,24 @@
-import { execFile } from "node:child_process";
-import { hostname } from "node:os";
+import { homedir, hostname, userInfo } from "node:os";
+import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { AppClient, AppError, CLIENT, type Fetch, parseAppUrl } from "../client/app-client.ts";
-import { SECRET_ENV_NAMES } from "../client/claude-code.ts";
+import { claudeVersion, SECRET_ENV_NAMES } from "../client/claude-code.ts";
+import { type Keychain, systemKeychain } from "../client/keychain.ts";
 import { clean, Log, type Output, Secrets } from "../client/output.ts";
 import { policyWarnings } from "../client/policy.ts";
 import { pause } from "../client/retry.ts";
-import { type AppRecord, defaultHome, localDate, Store } from "../client/store.ts";
+import { type Run, run } from "../client/run.ts";
+import { type AppRecord, defaultHome, instanceName, localDate, Store } from "../client/store.ts";
 import { Worker } from "../client/worker.ts";
 import { isAllowedUrl } from "../protocol/urls.ts";
+import { doctor } from "./doctor.ts";
+import {
+  type ServiceManager,
+  type ServiceSpec,
+  serviceEnv,
+  serviceManager,
+  thisProgram,
+} from "./service.ts";
 
 export const USAGE = `Usage: tether <command>
 
@@ -19,8 +29,17 @@ export const USAGE = `Usage: tether <command>
   status                Whether Tether is running, what it runs, and today's usage.
   apps                  The connected apps.
   disconnect <app>      Revoke this device at the app and forget it (app URL or name).
+  doctor                Check that Claude Code is installed, signed in and supports the flags
+                        Tether passes, and that each app is reachable and accepts this device.
+  service install|uninstall|status
+                        Run tether start in the background, now and at every login (launchd,
+                        a systemd user unit, or Task Scheduler), remove it, or show its state.
+  logs [--limit <n>]    The last tasks run (20 by default): when, app, type, id, duration, cost,
+                        how it ended, and title.
 
-Files live in ~/.tether (or TETHER_HOME): credentials.json, policy.json, usage.json.
+Files live in ~/.tether (or TETHER_HOME): credentials.json, policy.json, usage.json, tasks.jsonl.
+Device credentials go in the OS keychain where there is one (TETHER_KEYCHAIN=off keeps them
+in credentials.json, readable only by you).
 `;
 
 export interface Io {
@@ -30,6 +49,14 @@ export interface Io {
   /** Aborted on Ctrl-C or SIGTERM; `start` stops when it is. */
   signal?: AbortSignal;
   fetch?: Fetch;
+  /** The keychain for credentials; when absent, the OS keychain (or none, see systemKeychain). */
+  keychain?: Keychain;
+  /** The command line that runs this Tether, for `service install` (see thisProgram). */
+  program?: string[];
+  /** For `service`: the OS, the process runner and the user's home; the real ones when absent. */
+  platform?: NodeJS.Platform;
+  run?: Run;
+  userHome?: string;
 }
 
 interface Context {
@@ -57,7 +84,23 @@ const COMMANDS: Record<string, Command> = {
     return apps(ctx);
   },
   disconnect: (ctx, args) => disconnect(ctx, oneArg(args)),
+  logs: (ctx, args) => logs(ctx, args),
+  service: (ctx, args) => service(ctx, oneArg(args)),
+  doctor: (ctx, args) => {
+    noArgs(args);
+    return doctor({
+      store: ctx.store,
+      out: ctx.out,
+      fetch: ctx.fetch,
+      env: ctx.io.env,
+      agentCommand: agentCommandOf(ctx.io.env),
+    });
+  },
 };
+
+function agentCommandOf(env: Record<string, string | undefined>): string {
+  return env.TETHER_CLAUDE_PATH || "claude";
+}
 
 function noArgs(args: string[]): void {
   if (args.length > 0) throw new UsageError();
@@ -69,7 +112,7 @@ export async function main(argv: string[], io: Io): Promise<number> {
   for (const name of SECRET_ENV_NAMES) secrets.add(io.env[name] ?? "");
   const ctx: Context = {
     io,
-    store: new Store(defaultHome(io.env)),
+    store: openStore(io),
     secrets,
     out: new Log(io.stdout, secrets),
     err: new Log(io.stderr, secrets),
@@ -89,6 +132,11 @@ export async function main(argv: string[], io: Io): Promise<number> {
     ctx.err.line(`tether: ${(error as Error).message}`);
     return 1;
   }
+}
+
+function openStore(io: Io): Store {
+  const home = defaultHome(io.env);
+  return new Store(home, io.keychain ?? systemKeychain(io.env, instanceName(home)));
 }
 
 function oneArg(args: string[]): string {
@@ -143,7 +191,7 @@ async function connect(ctx: Context, value: string): Promise<number> {
   ctx.out.line("Waiting for approval...");
   const approved = await pollPairing(ctx, client, started);
   ctx.secrets.add(approved.credential);
-  ctx.store.saveApp({
+  const where = ctx.store.saveApp({
     origin,
     name: client.app.name,
     device: approved.device,
@@ -154,6 +202,7 @@ async function connect(ctx: Context, value: string): Promise<number> {
   ctx.out.line(
     `Connected to ${client.app.name} as "${approved.account.name}" (device "${approved.device.name}").`,
   );
+  ctx.out.line(`The device credential is in ${where}.`);
   ctx.out.line(`If that is not your account, run: tether disconnect ${origin}`);
   return 0;
 }
@@ -203,7 +252,8 @@ async function pollOnce(
 // start
 
 async function start(ctx: Context, args: string[]): Promise<number> {
-  const concurrency = parseConcurrency(args);
+  const concurrency = parseCount(args, "concurrency", 1, 16);
+  ctx.store.moveToKeychain();
   const records = ctx.store.apps();
   if (records.length === 0) throw new Error("No apps connected. Run: tether connect <app-url>");
   const running = ctx.store.runState();
@@ -211,8 +261,11 @@ async function start(ctx: Context, args: string[]): Promise<number> {
     throw new Error(`Tether is already running (pid ${running.pid}).`);
   }
   for (const warning of policyWarnings(ctx.store.policy())) ctx.err.line(warning);
-  const agentCommand = ctx.io.env.TETHER_CLAUDE_PATH || "claude";
-  const agentVersion = await claudeVersion(agentCommand);
+  const agentCommand = agentCommandOf(ctx.io.env);
+  const agentVersion = await claudeVersion(agentCommand, ctx.io.env);
+  if (!agentVersion) {
+    throw new Error("Claude Code was not found. Install it and sign in, then run tether start.");
+  }
   const signal = ctx.io.signal ?? new AbortController().signal;
   const worker = new Worker({
     store: ctx.store,
@@ -229,34 +282,17 @@ async function start(ctx: Context, args: string[]): Promise<number> {
   return worker.run(records);
 }
 
-function parseConcurrency(args: string[]): number {
+/** The command's only option, `--<name> <n>`, a whole number from 1 to `max`; no positionals. */
+function parseCount(args: string[], name: string, fallback: number, max: number): number {
   try {
-    const { values, positionals } = parseArgs({
-      args,
-      allowPositionals: true,
-      options: { concurrency: { type: "string" } },
-    });
-    const n = Number(values.concurrency ?? "1");
-    if (positionals.length > 0 || !Number.isInteger(n) || n < 1 || n > 16) throw new Error();
+    // parseArgs is strict: an unknown option or a positional throws.
+    const { values } = parseArgs({ args, options: { [name]: { type: "string" } } });
+    const n = Number(values[name] ?? fallback);
+    if (!Number.isInteger(n) || n < 1 || n > max) throw new Error();
     return n;
   } catch {
-    throw new UsageError("--concurrency must be a whole number from 1 to 16.");
+    throw new UsageError(`--${name} must be a whole number from 1 to ${max}.`);
   }
-}
-
-function claudeVersion(command: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile(command, ["--version"], { timeout: 15_000 }, (error, stdout) => {
-      const version = /\d+\.\d+\.\d+/.exec(String(stdout))?.[0];
-      if (error || !version) {
-        reject(
-          new Error("Claude Code was not found. Install it and sign in, then run tether start."),
-        );
-      } else {
-        resolve(version);
-      }
-    });
-  });
 }
 
 function isAlive(pid: number): boolean {
@@ -336,4 +372,85 @@ async function disconnect(ctx: Context, value: string): Promise<number> {
   ctx.store.removeApp(record.origin);
   ctx.out.line(`Disconnected ${record.name} (${record.origin}).`);
   return 0;
+}
+
+// logs
+
+function logs(ctx: Context, args: string[]): number {
+  const entries = ctx.store.taskLog(parseCount(args, "limit", 20, 1000));
+  if (entries.length === 0) ctx.out.line("No tasks have run yet.");
+  for (const entry of entries) {
+    const at = new Date(entry.at);
+    ctx.out.line(
+      [
+        `${localDate(at)} ${at.toTimeString().slice(0, 8)}`,
+        clean(entry.appName, 100),
+        clean(entry.type, 100),
+        clean(entry.id, 100),
+        `${(entry.durationMs / 1000).toFixed(1)} s`,
+        entry.costUsd === null ? "-" : `$${entry.costUsd.toFixed(4)}`,
+        entry.ended,
+        clean(entry.title, 200),
+      ].join("  "),
+    );
+  }
+  return 0;
+}
+
+// service
+
+function serviceSpec(ctx: Context): ServiceSpec {
+  const { io } = ctx;
+  const home = ctx.store.home;
+  return {
+    name: instanceName(home),
+    program: io.program ?? thisProgram(process.execPath, process.argv),
+    env: serviceEnv(io.env),
+    home,
+    userHome: io.userHome ?? homedir(),
+    uid: userInfo().uid,
+    windowsUser: `${io.env.USERDOMAIN ?? ""}\\${io.env.USERNAME ?? userInfo().username}`,
+  };
+}
+
+function service(ctx: Context, action: string): number {
+  const manager = serviceManager(ctx.io.platform ?? process.platform);
+  if (!manager) throw new Error("A background service is not supported on this system.");
+  const spec = serviceSpec(ctx);
+  const exec = ctx.io.run ?? run;
+  if (action === "status") {
+    ctx.out.line(`Background service (${manager.kind}): ${manager.status(spec, exec)}`);
+    return 0;
+  }
+  if (action === "uninstall") {
+    manager.uninstall(spec, exec);
+    ctx.out.line(`Removed the background service (${manager.kind}).`);
+    return 0;
+  }
+  if (action !== "install") throw new UsageError();
+  installService(ctx, manager, spec, exec);
+  return 0;
+}
+
+function installService(ctx: Context, manager: ServiceManager, spec: ServiceSpec, exec: Run): void {
+  if (ctx.store.apps().length === 0) {
+    throw new Error("No apps connected. Run: tether connect <app-url>, then install the service.");
+  }
+  for (const name of SECRET_ENV_NAMES) {
+    if (ctx.io.env[name]) {
+      ctx.err.line(
+        `The service does not carry ${name}: Claude Code there uses its own sign-in (claude auth login).`,
+      );
+    }
+  }
+  manager.install(spec, exec);
+  ctx.out.line(
+    `Installed the background service (${manager.kind}): it runs now and at every login.`,
+  );
+  ctx.out.line(
+    manager.kind === "systemd"
+      ? `Its output: journalctl --user -u ${spec.name}`
+      : `Its output: ${join(spec.home, "service.log")}`,
+  );
+  ctx.out.line("Check it with: tether service status, tether logs, tether doctor");
 }
