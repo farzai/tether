@@ -298,20 +298,26 @@ export class Worker {
         ended,
       });
     const settled = done
-      .then((result) => {
-        log(result.costUsd, result.ended);
-        return result.costUsd === undefined ? reservation : result.costUsd;
-      })
-      .catch((error: unknown) => {
-        this.#opts.log.line(`${record.name}  ${claim.task.id}  ${(error as Error).message}`);
-        log(undefined, "error");
-        return reservation;
-      })
-      .then((spent) => {
+      .then(
+        (result) => result,
+        (error: unknown) => {
+          this.#opts.log.line(`${record.name}  ${claim.task.id}  ${(error as Error).message}`);
+          return { costUsd: undefined, ended: "error" };
+        },
+      )
+      .then(({ costUsd, ended }) => {
         this.#reserved.set(record.origin, (this.#reserved.get(record.origin) ?? 0) - reservation);
-        this.#opts.store.addUsage(localDate(new Date()), record.origin, { tasks: 0, usd: spent });
         this.#running.delete(key);
         this.#slots.give();
+        try {
+          log(costUsd, ended);
+        } catch (error) {
+          this.#opts.log.line(
+            `${record.name}  ${claim.task.id}  could not be written to the task log: ${(error as Error).message}`,
+          );
+        }
+        const spent = costUsd === undefined ? reservation : costUsd;
+        this.#opts.store.addUsage(localDate(new Date()), record.origin, { tasks: 0, usd: spent });
         this.publish();
       });
     this.#running.set(key, {

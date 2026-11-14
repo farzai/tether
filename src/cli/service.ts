@@ -1,6 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import type { Run } from "../client/run.ts";
+import type { Ran, Run } from "../client/run.ts";
 
 /** What a background service runs and where its files go; built once from the CLI's context. */
 export interface ServiceSpec {
@@ -53,13 +53,18 @@ export function thisProgram(execPath: string, argv: string[]): string[] {
 
 class ServiceError extends Error {}
 
+function failure(done: Ran, what: string): ServiceError {
+  const detail = done.stderr.trim() || done.stdout.trim() || `exit ${done.status ?? "timeout"}`;
+  return new ServiceError(`${what} failed: ${detail.slice(0, 500)}`);
+}
+
 function must(run: Run, command: string, args: string[], what: string): void {
   const done = run(command, args);
-  if (done.status !== 0) {
-    const detail = done.stderr.trim() || done.stdout.trim() || `exit ${done.status ?? "timeout"}`;
-    throw new ServiceError(`${what} failed: ${detail.slice(0, 500)}`);
-  }
+  if (done.status !== 0) throw failure(done, what);
 }
+
+/** How often `bootstrap` is tried, a second apart, while an old agent is still booting out. */
+const BOOTSTRAP_TRIES = 10;
 
 function writePrivate(path: string, content: string | Buffer): void {
   mkdirSync(dirname(path), { recursive: true });
@@ -130,12 +135,21 @@ export const launchd: ServiceManager = {
   kind: "launchd",
   install(spec, run) {
     const target = `gui/${spec.uid}`;
-    // launchd would create the log readable by everyone; create it first, readable by the user.
+    // launchd would create the log readable by everyone; create it first, readable by the user,
+    // and take back a log an older install left readable by everyone.
     const log = join(spec.home, "service.log");
-    if (!existsSync(log)) writePrivate(log, "");
+    if (existsSync(log)) chmodSync(log, 0o600);
+    else writePrivate(log, "");
     writePrivate(launchdPlistPath(spec), launchdPlist(spec));
     run("launchctl", ["bootout", `${target}/${launchdLabel(spec)}`]);
-    must(run, "launchctl", ["bootstrap", target, launchdPlistPath(spec)], "launchctl bootstrap");
+    // bootout returns before a running agent has stopped, and bootstrap fails until it has.
+    for (let tries = 1; ; tries += 1) {
+      const done = run("launchctl", ["bootstrap", target, launchdPlistPath(spec)]);
+      if (done.status === 0) return;
+      if (tries === BOOTSTRAP_TRIES) throw failure(done, "launchctl bootstrap");
+      // Through the same runner as launchctl, so a test's runner does not wait.
+      run("sleep", ["1"]);
+    }
   },
   uninstall(spec, run) {
     run("launchctl", ["bootout", `gui/${spec.uid}/${launchdLabel(spec)}`]);
@@ -168,8 +182,6 @@ export function systemdUnit(spec: ServiceSpec): string {
     .join("\n");
   return `[Unit]
 Description=Tether: runs connected apps' tasks with Claude Code
-After=network-online.target
-Wants=network-online.target
 
 [Service]
 Type=simple

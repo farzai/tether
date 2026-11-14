@@ -56,6 +56,11 @@ export interface TaskLogEntry {
 
 const TASK_LOG_KEEP = 1000;
 const TASK_LOG_TRIM_BYTES = 1_000_000;
+/** The longest title, in characters, the task log keeps: the app sets it, so it is not trusted. */
+const TASK_LOG_TITLE_MAX = 200;
+/** Past this size the service log is cut to about its last SERVICE_LOG_KEEP_BYTES. */
+const SERVICE_LOG_MAX_BYTES = 5_000_000;
+const SERVICE_LOG_KEEP_BYTES = 1_000_000;
 
 /** Whether the file's last byte is not a newline; false for a missing or empty file. */
 function endsTorn(file: string): boolean {
@@ -168,22 +173,41 @@ export class Store {
     return { ...record, credential };
   }
 
-  /** Saves the app; returns where its credential went (the keychain's name or the file's path). */
-  saveApp(record: AppRecord): string {
+  /**
+   * Saves the app. `where` names the place its credential went: the keychain or the file. A
+   * `warning` says the keychain refused it and why; with no keychain at all the file is the place.
+   */
+  saveApp(record: AppRecord): { where: string; warning?: string } {
     const others = this.stored().filter((app) => app.origin !== record.origin);
     const { credential, ...rest } = record;
-    if (this.#keychain?.set(record.origin, credential)) {
+    const refused = this.#keychain?.set(record.origin, credential);
+    if (this.#keychain && refused === undefined) {
       this.write("credentials.json", { apps: [...others, { ...rest, credential_in: "keychain" }] });
-      return this.#keychain.name;
+      return { where: this.#keychain.name };
     }
     this.write("credentials.json", { apps: [...others, record] });
-    return this.path("credentials.json");
+    const where = this.path("credentials.json");
+    if (!this.#keychain) return { where };
+    const name = this.#keychain.name.replace(/^./, (first) => first.toUpperCase());
+    return {
+      where,
+      warning: `${name} refused the credential for ${record.origin} (${refused}), so it is in ${where}, readable only by you.`,
+    };
   }
 
-  /** Moves credentials an older Tether, or a refused keychain, left in the file into the keychain. */
-  moveToKeychain(): void {
-    if (!this.#keychain) return;
-    for (const app of this.stored()) if ("credential" in app) this.saveApp(app);
+  /**
+   * Moves credentials an older Tether, or a refused keychain, left in the file into the keychain;
+   * returns a warning for each one the keychain refuses again.
+   */
+  moveToKeychain(): string[] {
+    if (!this.#keychain) return [];
+    const warnings: string[] = [];
+    for (const app of this.stored()) {
+      if (!("credential" in app)) continue;
+      const { warning } = this.saveApp(app);
+      if (warning) warnings.push(warning);
+    }
+    return warnings;
   }
 
   removeApp(origin: string): void {
@@ -222,13 +246,41 @@ export class Store {
     const file = this.path("tasks.jsonl");
     // A crash mid-append leaves a line without its newline; start on a fresh line after it.
     const torn = endsTorn(file) ? "\n" : "";
-    appendFileSync(file, `${torn}${JSON.stringify(entry)}\n`, { mode: 0o600 });
+    const title = Array.from(entry.title).slice(0, TASK_LOG_TITLE_MAX).join("");
+    appendFileSync(file, `${torn}${JSON.stringify({ ...entry, title })}\n`, { mode: 0o600 });
     if (statSync(file).size > TASK_LOG_TRIM_BYTES) {
       const kept = this.taskLog(TASK_LOG_KEEP).map((entry) => JSON.stringify(entry));
       const temp = this.path(`.tasks.jsonl.${process.pid}.tmp`);
       writeFileSync(temp, `${kept.join("\n")}\n`, { mode: 0o600 });
       renameSync(temp, file);
     }
+  }
+
+  /**
+   * Cuts service.log to its last lines once it passes about 5 MB. The file is rewritten in place,
+   * not renamed: launchd and the Windows `>>` redirect append, so the running service keeps
+   * writing at the new end of the same file.
+   */
+  trimServiceLog(): void {
+    const file = this.path("service.log");
+    let size: number;
+    try {
+      size = statSync(file).size;
+    } catch {
+      return;
+    }
+    if (size <= SERVICE_LOG_MAX_BYTES) return;
+    const tail = Buffer.alloc(SERVICE_LOG_KEEP_BYTES);
+    const fd = openSync(file, "r");
+    try {
+      readSync(fd, tail, 0, tail.length, size - tail.length);
+    } finally {
+      closeSync(fd);
+    }
+    // Start on a whole line: the first one in the tail is most likely cut.
+    const kept = tail.subarray(tail.indexOf(0x0a) + 1);
+    writeFileSync(file, kept, { mode: 0o600 });
+    chmodSync(file, 0o600);
   }
 
   /** The last `limit` finished tasks, oldest first; a line that does not parse is skipped. */
