@@ -21,6 +21,7 @@ Guide for anyone (human or agent) changing this repository. The product spec is
 | `bun run test`                   | Vitest, once. `bun run coverage` adds a coverage report.           |
 | `bun run conformance <base-url>` | Run the protocol conformance suite against an app server.          |
 | `bun run fake-app [port]`        | Start the in-memory fake app server with its conformance hooks on. |
+| `bun run tether <command>`       | Run the CLI (`connect`, `start`, `status`, `apps`, `disconnect`).  |
 
 ## Layout
 
@@ -28,7 +29,12 @@ Guide for anyone (human or agent) changing this repository. The product spec is
   from the protocol document (a test enforces this).
 - `src/protocol/`: schema loading and validation shared by everything else.
 - `src/conformance/`: the conformance suite and its CLI.
+- `src/client/`: the client: protocol HTTP client, local policy, store, the Claude Code adapter
+  (`claude-code.ts`), one task's run (`run-task.ts`) and the claim and heartbeat loops (`worker.ts`).
+- `src/cli/`: the `tether` command.
 - `test/fake-app/`: an in-memory app server that implements the protocol, for tests.
+- `test/fake-claude/`: a stand-in `claude` binary that replays stream-json recorded from Claude Code;
+  no test calls a real model.
 
 ## Rules
 

@@ -1,3 +1,4 @@
+import { parseJson } from "../protocol/json.ts";
 import { validate } from "../protocol/schemas.ts";
 
 export const HOOK_HEADER = "Tether-Conformance-Secret";
@@ -87,15 +88,6 @@ export class Http {
 function describeError(error: unknown): string {
   const { cause } = error as { cause?: unknown };
   return String(cause === undefined ? error : cause);
-}
-
-function parseJson(text: string): unknown {
-  if (text === "") return undefined;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return undefined;
-  }
 }
 
 // Expectations

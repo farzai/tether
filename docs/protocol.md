@@ -307,7 +307,9 @@ A **task** is one unit of AI work the app has queued for a user
 - `mcp.token` is a **task token**: it only touches this task in the app. Each claim issues a fresh
   one. It works exactly as long as its lease is current and the task is not terminal: it stops when
   another claim takes the task, when the task is completed, failed or cancelled, or when the device
-  is revoked. Lease expiry alone does not stop it, matching the lease rule below.
+  is revoked. Lease expiry alone does not stop it, matching the lease rule below. The agent sends
+  it to the MCP server as `Authorization: Bearer <task token>` on every request, so the app's MCP
+  server MUST accept it in that header.
 - `tools.requested` is a request, not a grant, and each entry is a single tool name (letters,
   digits and `_`, starting with a letter, at most 64 characters). The client grants only the
   intersection with the user's local policy (see [Security](#15-security)).
@@ -572,16 +574,17 @@ An error response has a 4xx or 5xx status and the body
 ## 15. Security
 
 - **Two credentials, two scopes.** The device credential only claims and reports tasks. Results are
-  written through the app's MCP server with the task's `mcp.token`, which only touches that task and
-  lives as long as its lease is current (see [Tasks and leases](#6-tasks-and-leases)).
+  written through the app's MCP server with the task's `mcp.token`, sent as
+  `Authorization: Bearer <task token>`, which only touches that task and lives as long as its lease
+  is current (see [Tasks and leases](#6-tasks-and-leases)).
 - **Pairing.** Codes, single use, rate limits, explicit approval and the account name follow
   [Pairing security](#pairing-security). Users can see and revoke their devices in the app, and the
   client can revoke its own credential.
 - **Default deny on the user's machine.** The agent gets only the tools the client grants: the
   intersection of `tools.requested` with the user's local allow-list, plus the tools of the one MCP
-  server at the discovery `mcp` URL. Defaults: allow `WebSearch`, `WebFetch` and the app's MCP
-  tools; deny `Bash`, every other MCP server, and every file read or write outside the task's own
-  empty temporary directory. No field in this protocol can widen the local policy, and `limits` can
+  server at the discovery `mcp` URL. Defaults: allow `WebSearch` and the app's MCP tools; deny
+  `WebFetch` (it reaches the user's own network) unless the user allows it, `Bash`, every other
+  MCP server, and every file read or write outside the task's own empty temporary directory. No field in this protocol can widen the local policy, and `limits` can
   only lower local limits.
 - **Untrusted content stays data.** Only `instructions` and `skill`, which the app's own code
   writes, reach the agent as instructions (in the system prompt). `input` is passed only inside a
