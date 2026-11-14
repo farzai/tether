@@ -3,10 +3,11 @@ import { hostname } from "node:os";
 import { parseArgs } from "node:util";
 import { AppClient, AppError, CLIENT, type Fetch, parseAppUrl } from "../client/app-client.ts";
 import { SECRET_ENV_NAMES } from "../client/claude-code.ts";
+import { type Keychain, systemKeychain } from "../client/keychain.ts";
 import { clean, Log, type Output, Secrets } from "../client/output.ts";
 import { policyWarnings } from "../client/policy.ts";
 import { pause } from "../client/retry.ts";
-import { type AppRecord, defaultHome, localDate, Store } from "../client/store.ts";
+import { type AppRecord, defaultHome, instanceName, localDate, Store } from "../client/store.ts";
 import { Worker } from "../client/worker.ts";
 import { isAllowedUrl } from "../protocol/urls.ts";
 
@@ -20,7 +21,9 @@ export const USAGE = `Usage: tether <command>
   apps                  The connected apps.
   disconnect <app>      Revoke this device at the app and forget it (app URL or name).
 
-Files live in ~/.tether (or TETHER_HOME): credentials.json, policy.json, usage.json.
+Files live in ~/.tether (or TETHER_HOME): credentials.json, policy.json, usage.json, tasks.jsonl.
+Device credentials go in the OS keychain where there is one (TETHER_KEYCHAIN=off keeps them
+in credentials.json, readable only by you).
 `;
 
 export interface Io {
@@ -30,6 +33,8 @@ export interface Io {
   /** Aborted on Ctrl-C or SIGTERM; `start` stops when it is. */
   signal?: AbortSignal;
   fetch?: Fetch;
+  /** The keychain for credentials; when absent, the OS keychain (or none, see systemKeychain). */
+  keychain?: Keychain;
 }
 
 interface Context {
@@ -69,7 +74,7 @@ export async function main(argv: string[], io: Io): Promise<number> {
   for (const name of SECRET_ENV_NAMES) secrets.add(io.env[name] ?? "");
   const ctx: Context = {
     io,
-    store: new Store(defaultHome(io.env)),
+    store: openStore(io),
     secrets,
     out: new Log(io.stdout, secrets),
     err: new Log(io.stderr, secrets),
@@ -89,6 +94,11 @@ export async function main(argv: string[], io: Io): Promise<number> {
     ctx.err.line(`tether: ${(error as Error).message}`);
     return 1;
   }
+}
+
+function openStore(io: Io): Store {
+  const home = defaultHome(io.env);
+  return new Store(home, io.keychain ?? systemKeychain(io.env, instanceName(home)));
 }
 
 function oneArg(args: string[]): string {
@@ -143,7 +153,7 @@ async function connect(ctx: Context, value: string): Promise<number> {
   ctx.out.line("Waiting for approval...");
   const approved = await pollPairing(ctx, client, started);
   ctx.secrets.add(approved.credential);
-  ctx.store.saveApp({
+  const where = ctx.store.saveApp({
     origin,
     name: client.app.name,
     device: approved.device,
@@ -154,6 +164,7 @@ async function connect(ctx: Context, value: string): Promise<number> {
   ctx.out.line(
     `Connected to ${client.app.name} as "${approved.account.name}" (device "${approved.device.name}").`,
   );
+  ctx.out.line(`The device credential is in ${where}.`);
   ctx.out.line(`If that is not your account, run: tether disconnect ${origin}`);
   return 0;
 }
@@ -204,6 +215,7 @@ async function pollOnce(
 
 async function start(ctx: Context, args: string[]): Promise<number> {
   const concurrency = parseConcurrency(args);
+  ctx.store.moveToKeychain();
   const records = ctx.store.apps();
   if (records.length === 0) throw new Error("No apps connected. Run: tether connect <app-url>");
   const running = ctx.store.runState();

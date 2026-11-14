@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, describe, expect, it } from "vitest";
 import { main } from "../src/cli/main.ts";
+import type { Keychain } from "../src/client/keychain.ts";
 import { type AppRecord, Store } from "../src/client/store.ts";
 import { type FakeApp, type FakeAppOptions, startFakeApp } from "./fake-app/server.ts";
 
@@ -27,6 +28,8 @@ class Harness {
   err = "";
   app!: FakeApp;
   extraEnv: Record<string, string> = {};
+  /** A keychain for credentials; without one, credentials stay in credentials.json. */
+  keychain: Keychain | undefined;
   /** Rewrites a response body before Tether sees it, keyed by endpoint path suffix. */
   rewrite: Record<string, (body: Record<string, unknown>) => unknown> = {};
 
@@ -60,12 +63,14 @@ class Harness {
         PATH: process.env.PATH,
         HOME: process.env.HOME,
         GH_TOKEN: "must-not-reach-the-agent",
+        TETHER_KEYCHAIN: "off",
         ...this.extraEnv,
       },
       stdout: { write: (text: string) => (this.out += text) },
       stderr: { write: (text: string) => (this.err += text) },
       fetch: this.fetch as typeof fetch,
       ...(signal ? { signal } : {}),
+      ...(this.keychain ? { keychain: this.keychain } : {}),
     });
   }
 
@@ -197,6 +202,25 @@ describe.concurrent("tether connect", () => {
     expect(statSync(file).mode & 0o777).toBe(0o600);
     expect(statSync(h.home).mode & 0o777).toBe(0o700);
     expect(h.credential()).toMatch(/^tdc_/);
+    h.expectNoSecrets();
+  });
+
+  it("keeps the credential in the keychain when there is one, and runs tasks with it", async () => {
+    const h = await harness();
+    const items = new Map<string, string>();
+    h.keychain = {
+      name: "the test keychain",
+      get: (origin) => items.get(origin),
+      set: (origin, secret) => items.set(origin, secret) !== undefined,
+      delete: (origin) => items.delete(origin),
+    };
+    expect(await h.connect()).toBe(0);
+    expect(h.out).toContain("The device credential is in the test keychain.");
+    const [credential] = items.values();
+    expect(credential).toMatch(/^tdc_/);
+    expect(readFileSync(join(h.home, "credentials.json"), "utf8")).not.toContain(credential);
+    expect(await h.run(["disconnect", h.app.url])).toBe(0);
+    expect(items.size).toBe(0);
     h.expectNoSecrets();
   });
 

@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { type Keychain, KeychainUnavailable } from "./keychain.ts";
 import { type Cap, DEFAULT_POLICY, type Policy, parsePolicy, type Usage } from "./policy.ts";
 
 /** A paired app as stored on disk. `credential` is the device credential: a secret. */
@@ -12,6 +14,10 @@ export interface AppRecord {
   credential: string;
   pairedAt: string;
 }
+
+/** An app record in credentials.json: the credential itself, or a note that the keychain holds it. */
+type StoredApp = Omit<AppRecord, "credential"> &
+  ({ credential: string } | { credential_in: "keychain" });
 
 /** What a running `tether start` publishes for `tether status`. */
 export interface RunState {
@@ -32,15 +38,26 @@ export function defaultHome(env: Record<string, string | undefined>): string {
 }
 
 /**
+ * Names this Tether home's keychain items and background service: "tether" for ~/.tether, and
+ * "tether-" plus a hash of the path for any other home, so two homes never replace each other's.
+ */
+export function instanceName(home: string): string {
+  if (resolve(home) === resolve(homedir(), ".tether")) return "tether";
+  return `tether-${createHash("sha256").update(resolve(home)).digest("hex").slice(0, 8)}`;
+}
+
+/**
  * Tether's files in one directory (mode 0700), each written whole to a temporary file and renamed,
- * readable only by the user (0600). Credentials live in `credentials.json` until keychain storage
- * lands.
+ * readable only by the user (0600). A device credential lives in the OS keychain when there is one
+ * that takes it, and otherwise in `credentials.json`.
  */
 export class Store {
   readonly home: string;
+  readonly #keychain: Keychain | undefined;
 
-  constructor(home: string) {
+  constructor(home: string, keychain?: Keychain) {
     this.home = home;
+    this.#keychain = keychain;
   }
 
   private path(name: string): string {
@@ -68,18 +85,57 @@ export class Store {
     renameSync(temp, this.path(name));
   }
 
-  apps(): AppRecord[] {
-    const raw = this.read("credentials.json") as { apps?: AppRecord[] } | undefined;
+  private stored(): StoredApp[] {
+    const raw = this.read("credentials.json") as { apps?: StoredApp[] } | undefined;
     return raw?.apps ?? [];
   }
 
-  saveApp(record: AppRecord): void {
-    const others = this.apps().filter((app) => app.origin !== record.origin);
+  apps(): AppRecord[] {
+    return this.stored().map((app) => this.withCredential(app));
+  }
+
+  private withCredential(app: StoredApp): AppRecord {
+    if ("credential" in app) return app;
+    const { credential_in: _, ...record } = app;
+    const pairAgain = `Pair again: tether connect ${app.origin}`;
+    let credential: string | undefined;
+    try {
+      credential = this.#keychain?.get(app.origin);
+    } catch (error) {
+      if (!(error instanceof KeychainUnavailable)) throw error;
+      throw new Error(
+        `The credential for ${app.origin} is in the keychain, but ${error.message}. Unlock the keychain (sign in to the desktop) and try again.`,
+      );
+    }
+    if (credential === undefined) {
+      throw new Error(
+        `The keychain no longer holds the credential for ${app.origin}. ${pairAgain}`,
+      );
+    }
+    return { ...record, credential };
+  }
+
+  /** Saves the app; returns where its credential went (the keychain's name or the file's path). */
+  saveApp(record: AppRecord): string {
+    const others = this.stored().filter((app) => app.origin !== record.origin);
+    const { credential, ...rest } = record;
+    if (this.#keychain?.set(record.origin, credential)) {
+      this.write("credentials.json", { apps: [...others, { ...rest, credential_in: "keychain" }] });
+      return this.#keychain.name;
+    }
     this.write("credentials.json", { apps: [...others, record] });
+    return this.path("credentials.json");
+  }
+
+  /** Moves credentials an older Tether, or a refused keychain, left in the file into the keychain. */
+  moveToKeychain(): void {
+    if (!this.#keychain) return;
+    for (const app of this.stored()) if ("credential" in app) this.saveApp(app);
   }
 
   removeApp(origin: string): void {
-    this.write("credentials.json", { apps: this.apps().filter((app) => app.origin !== origin) });
+    this.write("credentials.json", { apps: this.stored().filter((app) => app.origin !== origin) });
+    this.#keychain?.delete(origin);
   }
 
   policy(): Policy {
