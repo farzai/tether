@@ -103,6 +103,7 @@ describe.concurrent("conformance suite against a misbehaving server", () => {
     ["redeliverCredential", "a delivered credential is not delivered again"],
     ["reusableUserCode", "a user code approves only one pairing"],
     ["ignoreRevoke", "revoke ends the device credential"],
+    ["knownCausesOnly", "fail accepts a cause, a retry time and a cause it does not know"],
   ] as const)("fails when the server misbehaves with %s", async (flag, check) => {
     const { run } = await runAgainst({ misbehave: { [flag]: true } });
     expect(failedNames(run.results)).toContain(check);

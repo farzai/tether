@@ -66,6 +66,17 @@ describe("docs/protocol.md examples", () => {
     expect(specDoc).toMatch(/lease expiry alone does not stop it/);
   });
 
+  it("keeps fail causes open: any short lower-case word, with an optional retry time", () => {
+    const fail = (extra: Record<string, unknown>) =>
+      validate("task-fail.request", { lease_id: "l", reason: "agent_error", ...extra }).ok;
+    expect(fail({ cause: "rate_limit", retry_at: "2026-11-14T15:00:00Z" })).toBe(true);
+    expect(fail({ cause: "some_later_cause" })).toBe(true);
+    expect(fail({ cause: "Rate limit" })).toBe(false);
+    expect(fail({ cause: "x".repeat(65) })).toBe(false);
+    expect(fail({ retry_at: "in an hour" })).toBe(false);
+    expect(fail({ reason: "rate_limit" })).toBe(false);
+  });
+
   it("rejects a task without instructions", () => {
     const result = validate("task", { id: "t", type: "x", title: "y" });
     expect(result.ok).toBe(false);
