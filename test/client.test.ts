@@ -6,8 +6,8 @@ import { AppClient, AppError, parseAppUrl } from "../src/client/app-client.ts";
 import { agentEnv, fencedInput, sessionProblem } from "../src/client/claude-code.ts";
 import { clean, Log, Secrets } from "../src/client/output.ts";
 import { DEFAULT_POLICY } from "../src/client/policy.ts";
-import { backoffMs, withRetry } from "../src/client/retry.ts";
-import { localDate, Store } from "../src/client/store.ts";
+import { backoffMs, retryDelay, withRetry } from "../src/client/retry.ts";
+import { defaultHome, localDate, Store } from "../src/client/store.ts";
 
 const ORIGIN = "https://paper.example";
 const DISCOVERY = {
@@ -147,6 +147,7 @@ describe("output", () => {
   it("strips terminal controls, C1 controls and bidi overrides from untrusted text", () => {
     expect(clean("a\u001b[2Jb\u009b31mc‮d\ne")).toBe("a [2Jb 31mc d e");
     expect(clean("x".repeat(30), 10)).toBe("xxxxxxx...");
+    expect(clean("x".repeat(10), 10)).toBe("x".repeat(10));
   });
 
   it("redacts every known secret before printing", () => {
@@ -157,6 +158,9 @@ describe("output", () => {
       "token tok_abcdefghijklmnopqrstuvwxyz leaked",
     );
     expect(printed).toBe("token [redacted] leaked\n");
+    secrets.add("");
+    secrets.add("~");
+    expect(secrets.redact("a ~")).toBe("a [redacted]");
     secrets.delete("tok_abcdefghijklmnopqrstuvwxyz");
     expect(secrets.redact("tok_abcdefghijklmnopqrstuvwxyz")).toBe("tok_abcdefghijklmnopqrstuvwxyz");
   });
@@ -240,6 +244,36 @@ describe("Store", () => {
     expect(() => s.policy()).toThrow(/policy.json could not be read/);
   });
 
+  it("finds its home in TETHER_HOME, else ~/.tether", () => {
+    expect(defaultHome({ TETHER_HOME: "/tmp/t" })).toBe("/tmp/t");
+    expect(defaultHome({})).toMatch(/\.tether$/);
+  });
+
+  it("stores one record per app origin and forgets one on request", () => {
+    const s = store();
+    expect(s.apps()).toEqual([]);
+    const app = (origin: string, name: string) => ({
+      origin,
+      name,
+      device: { id: "d", name: "n" },
+      account: "a",
+      credential: "c",
+      pairedAt: "2026-11-14T00:00:00Z",
+    });
+    s.saveApp(app(ORIGIN, "Paper"));
+    s.saveApp(app("https://other.example", "Other"));
+    s.saveApp(app(ORIGIN, "Paper 2"));
+    expect(s.apps().map((a) => a.name)).toEqual(["Other", "Paper 2"]);
+    s.removeApp(ORIGIN);
+    expect(s.apps().map((a) => a.name)).toEqual(["Other"]);
+  });
+
+  it("clears a run state that is not there without complaint", () => {
+    const s = store();
+    expect(() => s.clearRunState()).not.toThrow();
+    expect(s.runState()).toBeUndefined();
+  });
+
   it("formats the local date", () => {
     expect(localDate(new Date(2026, 0, 5, 23, 59))).toBe("2026-01-05");
   });
@@ -251,6 +285,30 @@ describe("retry", () => {
     expect(backoffMs(3, () => 1)).toBe(8000);
     expect(backoffMs(20, () => 1)).toBe(60_000);
     expect(backoffMs(0, () => 0)).toBe(500);
+  });
+
+  it("waits as the app asked, else backs off", () => {
+    expect(retryDelay(new AppError("retry", "x", undefined, 4000), 3)).toBe(4000);
+    for (const error of [new AppError("retry", "x"), new Error("x")]) {
+      const delay = retryDelay(error, 2);
+      expect(delay).toBeGreaterThanOrEqual(2000);
+      expect(delay).toBeLessThanOrEqual(4000);
+    }
+  });
+
+  it("gives up after the given number of attempts, or at once when stopped", async () => {
+    let calls = 0;
+    const always = async () => {
+      calls += 1;
+      throw new AppError("retry", "later", undefined, 1);
+    };
+    await expect(withRetry(always, 3)).rejects.toThrow("later");
+    expect(calls).toBe(3);
+    calls = 0;
+    const stopped = new AbortController();
+    stopped.abort();
+    await expect(withRetry(always, 3, stopped.signal)).rejects.toThrow("later");
+    expect(calls).toBe(1);
   });
 
   it("retries only retryable failures", async () => {

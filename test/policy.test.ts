@@ -52,9 +52,28 @@ describe("taskLimits", () => {
       Math.min(10 - 9.9, 2 - 1.9),
     );
   });
+
+  it("lets an app's own cap bind when the app has spent nothing yet", () => {
+    const withApp = { ...policy, apps: { [ORIGIN]: { tasks: 10, usd: 0.3 } } };
+    expect(
+      taskLimits({ timeout_s: 60, max_budget_usd: 1 }, withApp, noUsage(), ORIGIN).budgetUsd,
+    ).toBe(0.3);
+    const spent: Usage = { ...noUsage(), apps: { [ORIGIN]: { tasks: 1, usd: 0.2 } } };
+    expect(
+      taskLimits({ timeout_s: 60, max_budget_usd: 1 }, withApp, spent, ORIGIN).budgetUsd,
+    ).toBeCloseTo(0.1);
+  });
 });
 
 describe("capReached", () => {
+  it("counts only this app's tasks against its own cap", () => {
+    const policy = { ...DEFAULT_POLICY, apps: { [ORIGIN]: { tasks: 1, usd: 5 } } };
+    const usage: Usage = { ...noUsage(), total: { tasks: 3, usd: 0 } };
+    expect(capReached(policy, usage, ORIGIN)).toBeUndefined();
+    const small = { ...DEFAULT_POLICY, apps: { [ORIGIN]: { tasks: 5, usd: 0.5 } } };
+    expect(capReached(small, noUsage(), ORIGIN)).toBeUndefined();
+  });
+
   it("is undefined while every cap has room", () => {
     expect(capReached(DEFAULT_POLICY, noUsage(), ORIGIN)).toBeUndefined();
   });
@@ -104,5 +123,11 @@ describe("parsePolicy", () => {
     expect(() => parsePolicy({ max_task_usd: -1 })).toThrow(/max_task_usd/);
     expect(() => parsePolicy({ tools: ["mcp__evil__x"] })).toThrow(/tools/);
     expect(() => parsePolicy([])).toThrow(/object/);
+    expect(() => parsePolicy({ max_task_usd: "1" })).toThrow(/max_task_usd/);
+    expect(() => parsePolicy({ daily: { usd: Number.POSITIVE_INFINITY } })).toThrow(/daily.usd/);
+  });
+
+  it("accepts zero, so a user can allow no spend at all", () => {
+    expect(parsePolicy({ max_task_usd: 0 }).maxTaskUsd).toBe(0);
   });
 });

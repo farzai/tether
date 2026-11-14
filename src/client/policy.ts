@@ -61,7 +61,7 @@ export function taskLimits(
   origin: string,
 ): TaskLimits {
   const appCap = capFor(policy, origin);
-  const appSpent = usage.apps[origin] ?? { tasks: 0, usd: 0 };
+  const appSpent = spentBy(usage, origin);
   return {
     timeoutS: Math.min(limits.timeout_s, policy.maxTimeoutS),
     budgetUsd: Math.min(
@@ -75,7 +75,7 @@ export function taskLimits(
 
 /** Why no task may start for this app now, or undefined when every cap has room. */
 export function capReached(policy: Policy, usage: Usage, origin: string): string | undefined {
-  const appSpent = usage.apps[origin] ?? { tasks: 0, usd: 0 };
+  const appSpent = spentBy(usage, origin);
   return (
     exhausted("daily", policy.daily, usage.total) ??
     exhausted("daily", capFor(policy, origin), appSpent, " for this app")
@@ -86,6 +86,10 @@ function exhausted(label: string, cap: Cap, spent: Cap, scope = ""): string | un
   if (spent.tasks >= cap.tasks) return `${label} task cap${scope} reached (${cap.tasks})`;
   if (spent.usd >= cap.usd) return `${label} spend cap${scope} reached ($${cap.usd})`;
   return undefined;
+}
+
+function spentBy(usage: Usage, origin: string): Cap {
+  return usage.apps[origin] ?? { tasks: 0, usd: 0 };
 }
 
 /** An app without its own cap falls back to the overall daily cap. */

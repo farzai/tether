@@ -1,3 +1,4 @@
+import { parseJson } from "../protocol/json.ts";
 import { validate } from "../protocol/schemas.ts";
 import { isAllowedUrl } from "../protocol/urls.ts";
 
@@ -214,13 +215,4 @@ function networkCause(error: unknown): string {
   const { cause, name } = error as { cause?: { code?: unknown }; name?: string };
   if (name === "TimeoutError") return "timed out";
   return typeof cause?.code === "string" ? cause.code : "network error";
-}
-
-function parseJson(text: string): unknown {
-  if (text === "") return undefined;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return undefined;
-  }
 }

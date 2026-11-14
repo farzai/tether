@@ -91,9 +91,9 @@ export class Store {
 
   addUsage(today: string, origin: string, spent: Cap): Usage {
     const usage = this.usage(today);
-    const add = (cap: Cap | undefined): Cap => ({
-      tasks: (cap?.tasks ?? 0) + spent.tasks,
-      usd: (cap?.usd ?? 0) + spent.usd,
+    const add = (cap: Cap = { tasks: 0, usd: 0 }): Cap => ({
+      tasks: cap.tasks + spent.tasks,
+      usd: cap.usd + spent.usd,
     });
     const next = {
       date: today,
