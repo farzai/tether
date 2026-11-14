@@ -8,8 +8,11 @@ export interface Keychain {
   readonly name: string;
   /** The secret, or undefined when the keychain does not hold one; throws KeychainUnavailable. */
   get(origin: string): string | undefined;
-  /** False when the keychain refused the secret: the caller keeps it somewhere else. */
-  set(origin: string, secret: string): boolean;
+  /**
+   * Stores the secret; returns why the keychain refused it, or undefined once it holds it. A
+   * refused secret is the caller's to keep somewhere else. The reason never holds the secret.
+   */
+  set(origin: string, secret: string): string | undefined;
   delete(origin: string): void;
 }
 
@@ -19,6 +22,18 @@ function quoted(value: string): string | undefined {
 }
 
 const MAC_NOT_FOUND = 44;
+
+/** Why a write that the tool accepted still failed: it does not give the same secret back. */
+function readBack(keychain: Keychain, origin: string, secret: string): string | undefined {
+  try {
+    return keychain.get(origin) === secret
+      ? undefined
+      : `${keychain.name} did not give the credential back`;
+  } catch (error) {
+    if (error instanceof KeychainUnavailable) return error.message;
+    throw error;
+  }
+}
 
 /** The macOS login keychain through `/usr/bin/security`; `service` names this Tether home's items. */
 export function macKeychain(service: string, exec: Run = run): Keychain {
@@ -35,15 +50,15 @@ export function macKeychain(service: string, exec: Run = run): Keychain {
     set: (origin, secret) => {
       const account = quoted(origin);
       const password = quoted(secret);
-      if (!account || !password) return false;
+      if (!account || !password) {
+        return "the origin or credential holds a character `security -i` cannot take";
+      }
       // `security -i` reads its commands from stdin, which keeps the secret out of argv.
       const line = `add-generic-password -U -s ${service} -a ${account} -l ${quoted(`Tether ${origin}`)} -w ${password}\n`;
-      if (exec("security", ["-i"], line).status !== 0) return false;
-      try {
-        return keychain.get(origin) === secret;
-      } catch {
-        return false;
-      }
+      const done = exec("security", ["-i"], line);
+      // Only the status: security may echo the command line, and with it the secret.
+      if (done.status !== 0) return `security exited ${done.status ?? "timeout"}`;
+      return readBack(keychain, origin, secret);
     },
     delete: (origin) => {
       exec("security", ["delete-generic-password", "-s", service, "-a", origin]);
@@ -68,12 +83,13 @@ export function secretToolKeychain(service: string, exec: Run = run): Keychain {
     },
     set: (origin, secret) => {
       const args = ["store", `--label=Tether ${origin}`, ...attributes(origin)];
-      if (exec("secret-tool", args, secret).status !== 0) return false;
-      try {
-        return keychain.get(origin) === secret;
-      } catch {
-        return false;
+      const done = exec("secret-tool", args, secret);
+      if (done.status !== 0) {
+        // The secret went only to stdin, which secret-tool does not echo; its stderr says why.
+        const why = done.stderr.trim().split("\n")[0]?.slice(0, 200);
+        return `secret-tool exited ${done.status ?? "timeout"}${why ? `: ${why}` : ""}`;
       }
+      return readBack(keychain, origin, secret);
     },
     delete: (origin) => {
       exec("secret-tool", ["clear", ...attributes(origin)]);

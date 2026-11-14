@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   statSync,
@@ -13,8 +14,8 @@ import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, describe, expect, it } from "vitest";
 import { main } from "../src/cli/main.ts";
-import type { Keychain } from "../src/client/keychain.ts";
-import { type AppRecord, Store } from "../src/client/store.ts";
+import { type Keychain, KeychainUnavailable } from "../src/client/keychain.ts";
+import { type AppRecord, localDate, Store } from "../src/client/store.ts";
 import { type FakeApp, type FakeAppOptions, startFakeApp } from "./fake-app/server.ts";
 
 const FAKE_CLAUDE = new URL("./fake-claude/claude.mjs", import.meta.url).pathname;
@@ -177,6 +178,28 @@ afterAll(async () => {
   await Promise.all(cleanups.map((cleanup) => cleanup()));
 });
 
+/** A keychain that refuses every write, as a locked keyring does, and holds nothing. */
+function refusingKeychain(): Keychain {
+  return {
+    name: "the test keychain",
+    get: () => undefined,
+    set: () => "the test keychain is locked",
+    delete: () => {},
+  };
+}
+
+/** A keychain that cannot be asked at all, as a locked or unreachable one. */
+function lockedKeychain(): Keychain {
+  return {
+    name: "the test keychain",
+    get: () => {
+      throw new KeychainUnavailable("the test keychain did not answer (36)");
+    },
+    set: () => "the test keychain is locked",
+    delete: () => {},
+  };
+}
+
 async function harness(options: Partial<FakeAppOptions> = {}): Promise<Harness> {
   const h = await new Harness().start(options);
   cleanups.push(() => h.app.close());
@@ -219,16 +242,31 @@ describe.concurrent("tether connect", () => {
     h.keychain = {
       name: "the test keychain",
       get: (origin) => items.get(origin),
-      set: (origin, secret) => items.set(origin, secret) !== undefined,
+      set: (origin, secret) => {
+        items.set(origin, secret);
+        return undefined;
+      },
       delete: (origin) => items.delete(origin),
     };
     expect(await h.connect()).toBe(0);
     expect(h.out).toContain("The device credential is in the test keychain.");
+    expect(h.err).toBe("");
     const [credential] = items.values();
     expect(credential).toMatch(/^tdc_/);
     expect(readFileSync(join(h.home, "credentials.json"), "utf8")).not.toContain(credential);
     expect(await h.run(["disconnect", h.app.url])).toBe(0);
     expect(items.size).toBe(0);
+    h.expectNoSecrets();
+  });
+
+  it("warns, with the reason, when the keychain refuses the credential and it stays in the file", async () => {
+    const h = await harness();
+    h.keychain = refusingKeychain();
+    expect(await h.connect()).toBe(0);
+    expect(h.err).toMatch(
+      /The test keychain refused the credential for .* \(the test keychain is locked\), so it is in .*credentials\.json, readable only by you\./,
+    );
+    expect(h.out).toMatch(/The device credential is in .*credentials\.json\./);
     h.expectNoSecrets();
   });
 
@@ -374,6 +412,42 @@ describe.concurrent("tether start", () => {
     expect(complete.usage.cost_usd).toBeGreaterThan(0);
     expect(complete.usage.output_tokens).toBe(44);
     h.expectNoSecrets();
+  });
+
+  it("warns, with the reason, when the keychain refuses a credential it moves out of the file", async () => {
+    const h = await paired();
+    h.keychain = refusingKeychain();
+    h.err = "";
+    startTether(h);
+    await until(() => /claim/.test(h.sent.map((s) => s.path).join(" ")));
+    expect(h.err).toMatch(
+      /The test keychain refused the credential for .* \(the test keychain is locked\), so it is in .*credentials\.json/,
+    );
+    h.expectNoSecrets();
+  });
+
+  it("still frees the slot and the budget, and says so once, when the task log cannot be written", async () => {
+    const h = await paired();
+    mkdirSync(join(h.home, "tasks.jsonl"));
+    const first = h.enqueue({});
+    const second = h.enqueue({});
+    startTether(h);
+    await untilAsync(async () => (await h.status(first.id)).status === "completed");
+    await untilAsync(async () => (await h.status(second.id)).status === "completed");
+    await until(() => (h.out.match(/could not be written to the task log/g) ?? []).length >= 2);
+    await sleep(300);
+    expect(h.out.match(/could not be written to the task log/g)).toHaveLength(2);
+    expect(h.out).toMatch(new RegExp(`${first.id}  could not be written to the task log`));
+    expect(h.store().usage(localDate(new Date())).total.tasks).toBe(2);
+  });
+
+  it("cuts an oversized service log to its last lines when it starts", async () => {
+    const h = await paired();
+    const file = join(h.home, "service.log");
+    writeFileSync(file, `${"old line\n".repeat(700_000)}last line\n`);
+    startTether(h);
+    await until(() => statSync(file).size < 1_000_001);
+    expect(readFileSync(file, "utf8").endsWith("old line\nlast line\n")).toBe(true);
   });
 
   it("grants only the intersection with local policy: Bash is never granted", async () => {
@@ -759,6 +833,23 @@ describe.concurrent("tether doctor", () => {
     h.intercept["/.well-known/tether"] = () => new Response("down", { status: 503 });
     expect(await h.run(["doctor"])).toBe(1);
     expect(h.out).toMatch(/^FAIL {2}Fake App .*could not be reached/m);
+  });
+
+  it("fails, saying why, when the keychain that holds a credential cannot be read", async () => {
+    const h = await paired();
+    const file = join(h.home, "credentials.json");
+    const stored = JSON.parse(readFileSync(file, "utf8"));
+    const { credential: _, ...app } = stored.apps[0];
+    writeFileSync(file, JSON.stringify({ apps: [{ ...app, credential_in: "keychain" }] }));
+    h.keychain = lockedKeychain();
+    h.out = "";
+    h.err = "";
+    expect(await h.run(["doctor"])).toBe(1);
+    expect(h.out).toMatch(/^ok {4}Claude Code is signed in/m);
+    expect(h.out).toMatch(
+      /^FAIL {2}The credential for .* is in the keychain, but the test keychain did not answer \(36\)\. Unlock the keychain/m,
+    );
+    expect(h.err).toBe("");
   });
 
   it("says when no app is connected, without failing", async () => {

@@ -33,9 +33,9 @@ function memoryKeychain(refuse = false): Keychain & { items: Map<string, string>
     items,
     get: (origin) => items.get(origin),
     set: (origin, secret) => {
-      if (refuse) return false;
+      if (refuse) return "the test keychain is locked";
       items.set(origin, secret);
-      return true;
+      return undefined;
     },
     delete: (origin) => {
       items.delete(origin);
@@ -55,8 +55,8 @@ describe("credentials with a keychain", () => {
   it("keeps the credential in the keychain and out of the file, and reads it back", () => {
     const dir = home();
     const keychain = memoryKeychain();
-    const where = new Store(dir, keychain).saveApp(record());
-    expect(where).toBe("the test keychain");
+    const saved = new Store(dir, keychain).saveApp(record());
+    expect(saved).toEqual({ where: "the test keychain" });
     expect(keychain.items.get("https://paper.example")).toBe(SECRET);
     expect(onDisk(dir)).not.toContain(SECRET);
     expect(JSON.parse(onDisk(dir)).apps[0].credential_in).toBe("keychain");
@@ -95,7 +95,7 @@ describe("credentials with a keychain", () => {
     const dir = home();
     writeFileSync(join(dir, "credentials.json"), JSON.stringify({ apps: [record()] }));
     const keychain = memoryKeychain();
-    new Store(dir, keychain).moveToKeychain();
+    expect(new Store(dir, keychain).moveToKeychain()).toEqual([]);
     expect(onDisk(dir)).not.toContain(SECRET);
     expect(new Store(dir, keychain).apps()).toEqual([record()]);
   });
@@ -111,11 +111,25 @@ describe("credentials without a keychain", () => {
   it("falls back to the file, readable only by the user, when the keychain refuses", () => {
     const dir = home();
     const keychain = memoryKeychain(true);
-    const where = new Store(dir, keychain).saveApp(record());
-    expect(where).toBe(join(dir, "credentials.json"));
+    const saved = new Store(dir, keychain).saveApp(record());
+    expect(saved.where).toBe(join(dir, "credentials.json"));
+    expect(saved.warning).toBe(
+      `The test keychain refused the credential for https://paper.example (the test keychain is locked), so it is in ${join(dir, "credentials.json")}, readable only by you.`,
+    );
     expect(JSON.parse(onDisk(dir)).apps[0].credential).toBe(SECRET);
     expect(statSync(join(dir, "credentials.json")).mode & 0o777).toBe(0o600);
     expect(new Store(dir, keychain).apps()).toEqual([record()]);
+  });
+
+  it("warns about each credential the keychain refuses when moving them", () => {
+    const dir = home();
+    writeFileSync(join(dir, "credentials.json"), JSON.stringify({ apps: [record()] }));
+    const warnings = new Store(dir, memoryKeychain(true)).moveToKeychain();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(
+      /refused the credential for https:\/\/paper\.example \(the test keychain is locked\)/,
+    );
+    expect(warnings[0]).not.toContain(SECRET);
   });
 
   it("says to pair again when a keychain record is read with no keychain at all", () => {
@@ -132,9 +146,9 @@ describe("credentials without a keychain", () => {
     expect(store.apps()).toEqual([]);
   });
 
-  it("uses the file when there is no keychain", () => {
+  it("uses the file, without a warning, when there is no keychain", () => {
     const dir = home();
-    expect(new Store(dir).saveApp(record())).toBe(join(dir, "credentials.json"));
+    expect(new Store(dir).saveApp(record())).toEqual({ where: join(dir, "credentials.json") });
     expect(new Store(dir).apps()).toEqual([record()]);
   });
 
@@ -191,7 +205,7 @@ describe.each([
   it("stores, reads and deletes a secret, which only ever travels on stdin", () => {
     const exec = fakeRun();
     const keychain = make("tether", exec);
-    expect(keychain.set("https://paper.example", SECRET)).toBe(true);
+    expect(keychain.set("https://paper.example", SECRET)).toBeUndefined();
     expect(keychain.get("https://paper.example")).toBe(SECRET);
     keychain.delete("https://paper.example");
     expect(keychain.get("https://paper.example")).toBeUndefined();
@@ -204,12 +218,14 @@ describe.each([
       ["-i", "store"].includes(args[0] ?? "")
         ? { status: 0, stdout: "", stderr: "" }
         : { status: 1, stdout: "", stderr: "keyring locked" };
-    expect(make("tether", writeOnly).set("https://paper.example", SECRET)).toBe(false);
+    expect(make("tether", writeOnly).set("https://paper.example", SECRET)).toMatch(
+      /did not answer \(1\)/,
+    );
   });
 
   it("reports a refused write, and a read it could not make as unavailable, not missing", () => {
     const keychain = make("tether", broken);
-    expect(keychain.set("https://paper.example", SECRET)).toBe(false);
+    expect(keychain.set("https://paper.example", SECRET)).toMatch(/exited 1/);
     expect(() => keychain.get("https://paper.example")).toThrow(KeychainUnavailable);
   });
 });
@@ -217,16 +233,44 @@ describe.each([
 describe("the macOS keychain's stdin command", () => {
   it("refuses a secret it cannot quote rather than send a broken command", () => {
     const exec = fakeRun();
-    expect(macKeychain("tether", exec).set("https://paper.example", 'a"b')).toBe(false);
-    expect(macKeychain("tether", exec).set("https://paper.example", "a\\b")).toBe(false);
+    const reason = "the origin or credential holds a character `security -i` cannot take";
+    expect(macKeychain("tether", exec).set("https://paper.example", 'a"b')).toBe(reason);
+    expect(macKeychain("tether", exec).set("https://paper.example", "a\\b")).toBe(reason);
     expect(exec.calls).toEqual([]);
+  });
+});
+
+describe("the reason a keychain gives for refusing a secret", () => {
+  it("names only the exit status of `security -i`, whose stdin holds the secret", () => {
+    const echoes: Run = (_, args, input) =>
+      args[0] === "-i"
+        ? { status: 2, stdout: input ?? "", stderr: `parse error near ${input}` }
+        : { status: 44, stdout: "", stderr: "" };
+    const reason = macKeychain("tether", echoes).set("https://paper.example", SECRET);
+    expect(reason).toBe("security exited 2");
+  });
+
+  it("says when the macOS keychain gives back something else than it was given", () => {
+    const wrong: Run = (_, args) =>
+      args[0] === "-i"
+        ? { status: 0, stdout: "", stderr: "" }
+        : { status: 0, stdout: "another\n", stderr: "" };
+    expect(macKeychain("tether", wrong).set("https://paper.example", SECRET)).toBe(
+      "the macOS keychain did not give the credential back",
+    );
+  });
+
+  it("says why secret-tool could not store it, from its first line of stderr", () => {
+    expect(secretToolKeychain("tether", broken).set("https://paper.example", SECRET)).toBe(
+      "secret-tool exited 1: Cannot autolaunch D-Bus without X11",
+    );
   });
 });
 
 describe("the macOS keychain's quoting", () => {
   it("stores a secret with spaces in it", () => {
     const exec = fakeRun();
-    expect(macKeychain("tether", exec).set("https://paper.example", "a b  c")).toBe(true);
+    expect(macKeychain("tether", exec).set("https://paper.example", "a b  c")).toBeUndefined();
     expect(macKeychain("tether", exec).get("https://paper.example")).toBe("a b  c");
   });
 });

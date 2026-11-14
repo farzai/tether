@@ -191,7 +191,7 @@ async function connect(ctx: Context, value: string): Promise<number> {
   ctx.out.line("Waiting for approval...");
   const approved = await pollPairing(ctx, client, started);
   ctx.secrets.add(approved.credential);
-  const where = ctx.store.saveApp({
+  const { where, warning } = ctx.store.saveApp({
     origin,
     name: client.app.name,
     device: approved.device,
@@ -203,6 +203,7 @@ async function connect(ctx: Context, value: string): Promise<number> {
     `Connected to ${client.app.name} as "${approved.account.name}" (device "${approved.device.name}").`,
   );
   ctx.out.line(`The device credential is in ${where}.`);
+  if (warning) ctx.err.line(warning);
   ctx.out.line(`If that is not your account, run: tether disconnect ${origin}`);
   return 0;
 }
@@ -253,8 +254,10 @@ async function pollOnce(
 
 async function start(ctx: Context, args: string[]): Promise<number> {
   const concurrency = parseCount(args, "concurrency", 1, 16);
-  ctx.store.moveToKeychain();
+  const refused = ctx.store.moveToKeychain();
   const records = ctx.store.apps();
+  for (const record of records) ctx.secrets.add(record.credential);
+  for (const warning of refused) ctx.err.line(warning);
   if (records.length === 0) throw new Error("No apps connected. Run: tether connect <app-url>");
   const running = ctx.store.runState();
   if (running && isAlive(running.pid)) {
@@ -279,7 +282,34 @@ async function start(ctx: Context, args: string[]): Promise<number> {
     agentVersion,
     signal,
   });
-  return worker.run(records);
+  const trimming = trimServiceLog(ctx);
+  try {
+    return await worker.run(records);
+  } finally {
+    clearInterval(trimming);
+  }
+}
+
+/** How often a running `tether start` checks the size of the service log. */
+const SERVICE_LOG_CHECK_MS = 10 * 60_000;
+
+/**
+ * Keeps service.log, which the background service writes, under its size limit: now and every
+ * ten minutes. Not on Windows, where cmd's `>>` keeps writing at its old offset after a cut.
+ */
+function trimServiceLog(ctx: Context): NodeJS.Timeout | undefined {
+  if ((ctx.io.platform ?? process.platform) === "win32") return undefined;
+  const trim = () => {
+    try {
+      ctx.store.trimServiceLog();
+    } catch (error) {
+      ctx.err.line(`Could not trim the service log: ${(error as Error).message}`);
+    }
+  };
+  trim();
+  const timer = setInterval(trim, SERVICE_LOG_CHECK_MS);
+  timer.unref();
+  return timer;
 }
 
 /** The command's only option, `--<name> <n>`, a whole number from 1 to `max`; no positionals. */
