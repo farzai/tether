@@ -10,7 +10,7 @@ import {
   type Http,
   type Reply,
 } from "./http.ts";
-import { isAllowedUrl } from "./urls.ts";
+import { isAllowedUrl } from "../protocol/urls.ts";
 
 /** What a check needs from earlier checks; the runner skips the check when one is missing. */
 export type Need =

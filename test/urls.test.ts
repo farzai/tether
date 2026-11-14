@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isAllowedUrl } from "../src/conformance/urls.ts";
+import { isAllowedUrl } from "../src/protocol/urls.ts";
 
 describe("isAllowedUrl", () => {
   it.each([
