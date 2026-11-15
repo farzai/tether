@@ -33,7 +33,14 @@ export async function doctor(deps: DoctorDeps): Promise<number> {
     deps.out.line(`${level.padEnd(6)}${text}`);
   };
   await checkAgent(deps, say);
-  const apps = deps.store.apps();
+  let apps: AppRecord[];
+  try {
+    apps = deps.store.apps();
+  } catch (error) {
+    // A locked or unreachable keychain, or an unreadable credentials.json: the store says which.
+    say("FAIL", (error as Error).message);
+    return 1;
+  }
   if (apps.length === 0) say("warn", "No apps connected. Run: tether connect <app-url>");
   for (const app of apps) await checkApp(deps, app, say);
   return failed ? 1 : 0;

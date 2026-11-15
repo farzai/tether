@@ -11,7 +11,7 @@ function entry(n: number): TaskLogEntry {
     appName: "Paper",
     id: `tsk_${n}`,
     type: "paper.summarise",
-    title: "x".repeat(900),
+    title: "x".repeat(150),
     durationMs: 1000,
     costUsd: 0.01,
     ended: "complete",
@@ -21,11 +21,11 @@ function entry(n: number): TaskLogEntry {
 describe("the task log", () => {
   it("keeps the last 1000 tasks once it passes about 1 MB", () => {
     const store = new Store(mkdtempSync(join(tmpdir(), "tether-store-")));
-    for (let n = 1; n <= 1200; n += 1) store.logTask(entry(n));
+    for (let n = 1; n <= 4000; n += 1) store.logTask(entry(n));
     const file = join(store.home, "tasks.jsonl");
     expect(statSync(file).size).toBeLessThanOrEqual(1_100_000);
     const all = store.taskLog(1000);
-    expect(all.at(-1)?.id).toBe("tsk_1200");
+    expect(all.at(-1)?.id).toBe("tsk_4000");
     expect(all.length).toBeLessThanOrEqual(1000);
     expect(all.length).toBeGreaterThan(900);
     expect(statSync(file).mode & 0o777).toBe(0o600);
@@ -55,5 +55,42 @@ describe("the task log", () => {
     expect(store.taskLog(10).map((e) => e.id)).toEqual(["tsk_1"]);
     store.logTask(entry(2));
     expect(store.taskLog(10).map((e) => e.id)).toEqual(["tsk_1", "tsk_2"]);
+  });
+
+  it("keeps at most 200 characters of an app's title", () => {
+    const store = new Store(mkdtempSync(join(tmpdir(), "tether-store-")));
+    store.logTask({ ...entry(1), title: `${"t".repeat(199)}\u{1F600}${"x".repeat(5000)}` });
+    const [logged] = store.taskLog(1);
+    expect(Array.from(logged?.title ?? "")).toHaveLength(200);
+    expect(logged?.title.endsWith("\u{1F600}")).toBe(true);
+  });
+});
+
+describe("the service log", () => {
+  it("keeps the last part of the log, from a line start, once it passes the limit", () => {
+    const store = new Store(mkdtempSync(join(tmpdir(), "tether-store-")));
+    const file = join(store.home, "service.log");
+    const lines = Array.from({ length: 60_000 }, (_, n) => `line ${n} ${"y".repeat(90)}`);
+    writeFileSync(file, `${lines.join("\n")}\n`, { mode: 0o644 });
+    store.trimServiceLog();
+    const kept = readFileSync(file, "utf8");
+    expect(kept.length).toBeLessThanOrEqual(1_000_000);
+    expect(kept.length).toBeGreaterThan(900_000);
+    expect(kept.startsWith("line ")).toBe(true);
+    expect(kept.endsWith(`line 59999 ${"y".repeat(90)}\n`)).toBe(true);
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+  });
+
+  it("leaves a log at or under the limit, and a missing one, alone", () => {
+    const store = new Store(mkdtempSync(join(tmpdir(), "tether-store-")));
+    store.trimServiceLog();
+    const file = join(store.home, "service.log");
+    writeFileSync(file, "started\n");
+    store.trimServiceLog();
+    expect(readFileSync(file, "utf8")).toBe("started\n");
+    const atLimit = `${"z".repeat(4_999_999)}\n`;
+    writeFileSync(file, atLimit);
+    store.trimServiceLog();
+    expect(statSync(file).size).toBe(5_000_000);
   });
 });
