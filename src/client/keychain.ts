@@ -1,4 +1,4 @@
-import { type Run, run } from "./run.ts";
+import { ended, type Run, run } from "./run.ts";
 
 /** The keychain could not be asked at all (locked, no session bus, tool missing), as opposed to not holding the item. */
 export class KeychainUnavailable extends Error {}
@@ -43,9 +43,7 @@ export function macKeychain(service: string, exec: Run = run): Keychain {
       const done = exec("security", ["find-generic-password", "-s", service, "-a", origin, "-w"]);
       if (done.status === 0) return done.stdout.replace(/\n$/, "");
       if (done.status === MAC_NOT_FOUND) return undefined;
-      throw new KeychainUnavailable(
-        `the macOS keychain did not answer (${done.status ?? "timeout"})`,
-      );
+      throw new KeychainUnavailable(`the macOS keychain did not answer (security ${ended(done)})`);
     },
     set: (origin, secret) => {
       const account = quoted(origin);
@@ -57,7 +55,7 @@ export function macKeychain(service: string, exec: Run = run): Keychain {
       const line = `add-generic-password -U -s ${service} -a ${account} -l ${quoted(`Tether ${origin}`)} -w ${password}\n`;
       const done = exec("security", ["-i"], line);
       // Only the status: security may echo the command line, and with it the secret.
-      if (done.status !== 0) return `security exited ${done.status ?? "timeout"}`;
+      if (done.status !== 0) return `security ${ended(done)}`;
       return readBack(keychain, origin, secret);
     },
     delete: (origin) => {
@@ -78,7 +76,7 @@ export function secretToolKeychain(service: string, exec: Run = run): Keychain {
       // secret-tool exits 1 quietly when nothing matches, and says why when it cannot ask.
       if (done.status === 1 && done.stderr.trim() === "") return undefined;
       throw new KeychainUnavailable(
-        `the Secret Service keyring did not answer (${done.status ?? "timeout"})`,
+        `the Secret Service keyring did not answer (secret-tool ${ended(done)})`,
       );
     },
     set: (origin, secret) => {
@@ -90,7 +88,7 @@ export function secretToolKeychain(service: string, exec: Run = run): Keychain {
           .trim()
           .replace(/\n[\s\S]*/, "")
           .slice(0, 200);
-        return `secret-tool exited ${done.status ?? "timeout"}${why ? `: ${why}` : ""}`;
+        return `secret-tool ${ended(done)}${why ? `: ${why}` : ""}`;
       }
       return readBack(keychain, origin, secret);
     },
