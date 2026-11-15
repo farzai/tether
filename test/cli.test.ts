@@ -416,12 +416,16 @@ describe.concurrent("tether start", () => {
 
   it("warns, with the reason, when the keychain refuses a credential it moves out of the file", async () => {
     const h = await paired();
-    h.keychain = refusingKeychain();
+    // A reason that quotes the credential: the warning must print it redacted.
+    h.keychain = {
+      ...refusingKeychain(),
+      set: (_, secret) => `the test keychain is locked: ${secret}`,
+    };
     h.err = "";
     startTether(h);
     await until(() => /claim/.test(h.sent.map((s) => s.path).join(" ")));
     expect(h.err).toMatch(
-      /The test keychain refused the credential for .* \(the test keychain is locked\), so it is in .*credentials\.json/,
+      /The test keychain refused the credential for .* \(the test keychain is locked: \[redacted\]\), so it is in .*credentials\.json/,
     );
     h.expectNoSecrets();
   });
@@ -860,6 +864,19 @@ describe.concurrent("tether doctor", () => {
       /^FAIL {2}The credential for .* is in the keychain, but the test keychain did not answer \(36\)\. Unlock the keychain/m,
     );
     expect(h.err).toBe("");
+    h.expectNoSecrets();
+  });
+
+  it("fails, without quoting it, when credentials.json is not valid JSON", async () => {
+    const h = await paired();
+    const file = join(h.home, "credentials.json");
+    // The parser's own message quotes the text around the error, here the credential.
+    writeFileSync(file, `{"apps": [{"credential": ${h.credential()}}]}`);
+    h.out = "";
+    h.err = "";
+    expect(await h.run(["doctor"])).toBe(1);
+    expect(h.out).toMatch(/^FAIL {2}.*credentials\.json could not be read \(invalid JSON\)$/m);
+    h.expectNoSecrets();
   });
 
   it("says when no app is connected, without failing", async () => {

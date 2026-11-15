@@ -219,7 +219,7 @@ describe.each([
         ? { status: 0, stdout: "", stderr: "" }
         : { status: 1, stdout: "", stderr: "keyring locked" };
     expect(make("tether", writeOnly).set("https://paper.example", SECRET)).toMatch(
-      /did not answer \(1\)/,
+      /did not answer \(\S+ exited 1\)/,
     );
   });
 
@@ -227,6 +227,38 @@ describe.each([
     const keychain = make("tether", broken);
     expect(keychain.set("https://paper.example", SECRET)).toMatch(/exited 1/);
     expect(() => keychain.get("https://paper.example")).toThrow(KeychainUnavailable);
+  });
+});
+
+describe.each([
+  ["macOS", macKeychain, "security"],
+  ["Secret Service", secretToolKeychain, "secret-tool"],
+])("the %s keychain's tool", (_, make, tool) => {
+  const ended =
+    (error: string, signal?: string): Run =>
+    () => ({ status: null, stdout: "", stderr: "", error, ...(signal ? { signal } : {}) });
+
+  it("says it could not run when the tool cannot be started", () => {
+    const keychain = make("tether", ended("ENOENT"));
+    expect(keychain.set("https://paper.example", SECRET)).toBe(`${tool} could not run`);
+    expect(() => keychain.get("https://paper.example")).toThrow(`(${tool} could not run)`);
+  });
+
+  it("says it timed out when the tool did not finish in time", () => {
+    // spawnSync both sets ETIMEDOUT and names the signal it sent.
+    const keychain = make("tether", ended("ETIMEDOUT", "SIGTERM"));
+    expect(keychain.set("https://paper.example", SECRET)).toBe(`${tool} timed out`);
+    expect(() => keychain.get("https://paper.example")).toThrow(`(${tool} timed out)`);
+  });
+
+  it("says it was stopped when a signal ended the tool", () => {
+    const keychain = make("tether", () => ({
+      status: null,
+      stdout: "",
+      stderr: "",
+      signal: "SIGKILL",
+    }));
+    expect(keychain.set("https://paper.example", SECRET)).toBe(`${tool} was stopped (SIGKILL)`);
   });
 });
 

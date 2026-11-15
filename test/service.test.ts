@@ -1,4 +1,12 @@
-import { chmodSync, existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -258,7 +266,15 @@ describe("tether service on Linux", () => {
     expect(s.err).toMatch(/enable failed: Unit file is masked\./);
     s.answers["systemctl --user enable"] = { status: 5, stdout: "", stderr: "" };
     expect(await s.exec("install")).toBe(1);
-    expect(s.err).toMatch(/enable failed: exit 5/);
+    expect(s.err).toMatch(/enable failed: exited 5/);
+    s.answers["systemctl --user enable"] = {
+      status: null,
+      stdout: "",
+      stderr: "",
+      error: "ENOENT",
+    };
+    expect(await s.exec("install")).toBe(1);
+    expect(s.err).toMatch(/enable failed: could not run/);
   });
 
   it("warns that an Anthropic key in the shell does not reach the service", async () => {
@@ -309,6 +325,19 @@ describe("tether service on macOS, over an agent already loaded", () => {
     expect(await s.exec("install")).toBe(0);
     expect(statSync(join(s.home, "service.log")).mode & 0o777).toBe(0o600);
     expect(readFileSync(join(s.home, "service.log"), "utf8")).toBe("earlier output\n");
+  });
+
+  it("refuses a log that is a symbolic link, and leaves what it points at alone", async () => {
+    const s = new ServiceRun("darwin").connected();
+    const elsewhere = join(mkdtempSync(join(tmpdir(), "tether-test-elsewhere-")), "notes.txt");
+    writeFileSync(elsewhere, "not Tether's\n", { mode: 0o644 });
+    chmodSync(elsewhere, 0o644);
+    symlinkSync(elsewhere, join(s.home, "service.log"));
+    expect(await s.exec("install")).toBe(1);
+    expect(s.err).toMatch(/service\.log is a symbolic link/);
+    expect(statSync(elsewhere).mode & 0o777).toBe(0o644);
+    expect(readFileSync(elsewhere, "utf8")).toBe("not Tether's\n");
+    expect(s.calls).toEqual([]);
   });
 
   it("waits and bootstraps again while the old agent is still being booted out", async () => {

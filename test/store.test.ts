@@ -1,8 +1,17 @@
-import { appendFileSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  chmodSync,
+  lstatSync,
+  mkdtempSync,
+  readFileSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { Store, type TaskLogEntry } from "../src/client/store.ts";
+import { type AppRecord, Store, type TaskLogEntry } from "../src/client/store.ts";
 
 function entry(n: number): TaskLogEntry {
   return {
@@ -92,5 +101,49 @@ describe("the service log", () => {
     writeFileSync(file, atLimit);
     store.trimServiceLog();
     expect(statSync(file).size).toBe(5_000_000);
+  });
+});
+
+function record(): AppRecord {
+  return {
+    origin: "https://paper.example",
+    name: "Paper",
+    device: { id: "dev_1", name: "Mac (Tether)" },
+    account: "Ann",
+    credential: "tdc_not-a-real-credential",
+    pairedAt: "2026-11-14T00:00:00.000Z",
+  };
+}
+
+describe("files Tether writes", () => {
+  /** A file outside the home that a symbolic link in the home points at. */
+  function elsewhere(): string {
+    const file = join(mkdtempSync(join(tmpdir(), "tether-store-elsewhere-")), "notes.txt");
+    writeFileSync(file, "not Tether's\n", { mode: 0o644 });
+    chmodSync(file, 0o644);
+    return file;
+  }
+
+  it("never writes credentials through a symbolic link at the temporary file", () => {
+    const store = new Store(mkdtempSync(join(tmpdir(), "tether-store-")));
+    const target = elsewhere();
+    symlinkSync(target, join(store.home, `.credentials.json.${process.pid}.tmp`));
+    store.saveApp(record());
+    expect(readFileSync(target, "utf8")).toBe("not Tether's\n");
+    expect(statSync(target).mode & 0o777).toBe(0o644);
+    const file = join(store.home, "credentials.json");
+    expect(lstatSync(file).isSymbolicLink()).toBe(false);
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+    expect(store.apps()[0]?.credential).toBe(record().credential);
+  });
+
+  it("refuses to cut a service log that is a symbolic link, and leaves what it points at alone", () => {
+    const store = new Store(mkdtempSync(join(tmpdir(), "tether-store-")));
+    const target = elsewhere();
+    writeFileSync(target, "x".repeat(5_000_001));
+    symlinkSync(target, join(store.home, "service.log"));
+    expect(() => store.trimServiceLog()).toThrow(/service\.log is a symbolic link/);
+    expect(statSync(target).size).toBe(5_000_001);
+    expect(statSync(target).mode & 0o777).toBe(0o644);
   });
 });
