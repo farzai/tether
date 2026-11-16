@@ -10,12 +10,12 @@ import {
   renameSync,
   rmSync,
   statSync,
-  writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { type Keychain, KeychainUnavailable } from "./keychain.ts";
 import { type Cap, DEFAULT_POLICY, type Policy, parsePolicy, type Usage } from "./policy.ts";
+import { createPrivate, cutToTail } from "./private-file.ts";
 
 /** A paired app as stored on disk. `credential` is the device credential: a secret. */
 export interface AppRecord {
@@ -123,6 +123,10 @@ export class Store {
       return JSON.parse(readFileSync(this.path(name), "utf8"));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      // The parser's message quotes the text around the error, which can be part of a credential.
+      if (error instanceof SyntaxError) {
+        throw new Error(`${this.path(name)} could not be read (invalid JSON)`);
+      }
       throw new Error(`${this.path(name)} could not be read: ${(error as Error).message}`);
     }
   }
@@ -138,8 +142,7 @@ export class Store {
   private write(name: string, value: unknown): void {
     this.makeHome();
     const temp = this.path(`.${name}.${process.pid}.tmp`);
-    writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
-    chmodSync(temp, 0o600);
+    createPrivate(temp, `${JSON.stringify(value, null, 2)}\n`);
     renameSync(temp, this.path(name));
   }
 
@@ -251,7 +254,7 @@ export class Store {
     if (statSync(file).size > TASK_LOG_TRIM_BYTES) {
       const kept = this.taskLog(TASK_LOG_KEEP).map((entry) => JSON.stringify(entry));
       const temp = this.path(`.tasks.jsonl.${process.pid}.tmp`);
-      writeFileSync(temp, `${kept.join("\n")}\n`, { mode: 0o600 });
+      createPrivate(temp, `${kept.join("\n")}\n`);
       renameSync(temp, file);
     }
   }
@@ -262,25 +265,7 @@ export class Store {
    * writing at the new end of the same file.
    */
   trimServiceLog(): void {
-    const file = this.path("service.log");
-    let size: number;
-    try {
-      size = statSync(file).size;
-    } catch {
-      return;
-    }
-    if (size <= SERVICE_LOG_MAX_BYTES) return;
-    const tail = Buffer.alloc(SERVICE_LOG_KEEP_BYTES);
-    const fd = openSync(file, "r");
-    try {
-      readSync(fd, tail, 0, tail.length, size - tail.length);
-    } finally {
-      closeSync(fd);
-    }
-    // Start on a whole line: the first one in the tail is most likely cut.
-    const kept = tail.subarray(tail.indexOf(0x0a) + 1);
-    writeFileSync(file, kept, { mode: 0o600 });
-    chmodSync(file, 0o600);
+    cutToTail(this.path("service.log"), SERVICE_LOG_MAX_BYTES, SERVICE_LOG_KEEP_BYTES);
   }
 
   /** The last `limit` finished tasks, oldest first; a line that does not parse is skipped. */

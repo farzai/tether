@@ -1,6 +1,7 @@
-import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import type { Ran, Run } from "../client/run.ts";
+import { createPrivate, makePrivate } from "../client/private-file.ts";
+import { ended, type Ran, type Run } from "../client/run.ts";
 
 /** What a background service runs and where its files go; built once from the CLI's context. */
 export interface ServiceSpec {
@@ -54,7 +55,7 @@ export function thisProgram(execPath: string, argv: string[]): string[] {
 class ServiceError extends Error {}
 
 function failure(done: Ran, what: string): ServiceError {
-  const detail = done.stderr.trim() || done.stdout.trim() || `exit ${done.status ?? "timeout"}`;
+  const detail = done.stderr.trim() || done.stdout.trim() || ended(done);
   return new ServiceError(`${what} failed: ${detail.slice(0, 500)}`);
 }
 
@@ -68,8 +69,7 @@ const BOOTSTRAP_TRIES = 10;
 
 function writePrivate(path: string, content: string | Buffer): void {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, content, { mode: 0o600 });
-  chmodSync(path, 0o600);
+  createPrivate(path, content);
 }
 
 // launchd (macOS)
@@ -138,7 +138,7 @@ export const launchd: ServiceManager = {
     // launchd would create the log readable by everyone; create it first, readable by the user,
     // and take back a log an older install left readable by everyone.
     const log = join(spec.home, "service.log");
-    if (existsSync(log)) chmodSync(log, 0o600);
+    if (existsSync(log)) makePrivate(log);
     else writePrivate(log, "");
     writePrivate(launchdPlistPath(spec), launchdPlist(spec));
     run("launchctl", ["bootout", `${target}/${launchdLabel(spec)}`]);
