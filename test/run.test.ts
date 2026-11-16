@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { run } from "../src/client/run.ts";
+import { ended, run } from "../src/client/run.ts";
 
 describe("run", () => {
   it("passes input on stdin and returns the status and both outputs", () => {
@@ -12,7 +12,9 @@ describe("run", () => {
     });
   });
 
-  it("reports a program that cannot start with a null status", () => {
-    expect(run("/no/such/program", []).status).toBeNull();
+  it("reports a program that cannot start with a null status, as one that could not run", () => {
+    const done = run("/no/such/program", []);
+    expect(done.status).toBeNull();
+    expect(ended(done)).toBe("could not run");
   });
 });

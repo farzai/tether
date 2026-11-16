@@ -36,6 +36,8 @@ Guide for anyone (human or agent) changing this repository. The product spec is
 - `src/cli/`: the `tether` command, `doctor.ts` and the background service (`service.ts`).
 - `src/client/keychain.ts`: the OS keychain for device credentials; `store.ts` falls back to the
   0600 file.
+- `src/client/private-file.ts`: every write and chmod of a file only the user may read
+  (credentials, state, service files, `service.log`); none of them follows a symbolic link.
 - `src/protocol/schemas.ts` imports each schema: a compiled binary reads nothing from disk, so a
   new schema file must be imported there too (a test fails until it is).
 - `test/fake-app/`: an in-memory app server that implements the protocol, for tests.

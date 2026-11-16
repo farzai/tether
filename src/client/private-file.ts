@@ -8,7 +8,7 @@ import {
   openSync,
   readSync,
   rmSync,
-  writeSync,
+  writeFileSync,
 } from "node:fs";
 
 /** Zero on Windows, which has no O_NOFOLLOW; `refuseLink` checks there instead. */
@@ -28,23 +28,12 @@ function refuseLink(file: string): void {
 }
 
 /**
- * Opens `file` with `flags` and never through a symbolic link: O_NOFOLLOW makes the open itself
- * fail on one, and the lstat check names the file (and stands in on Windows).
+ * Opens `file` with `flags` and never through a symbolic link: the lstat check names the file
+ * (and stands in on Windows), and O_NOFOLLOW still fails the open on a link put there since.
  */
 function openOwn(file: string, flags: number, mode?: number): number {
   refuseLink(file);
-  try {
-    return openSync(file, flags | NOFOLLOW, mode);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ELOOP") refuseLink(file);
-    throw error;
-  }
-}
-
-function writeAll(fd: number, content: string | Uint8Array): void {
-  const bytes = typeof content === "string" ? Buffer.from(content, "utf8") : content;
-  let done = 0;
-  while (done < bytes.length) done += writeSync(fd, bytes, done, bytes.length - done, done);
+  return openSync(file, flags | NOFOLLOW, mode);
 }
 
 /**
@@ -57,7 +46,7 @@ export function createPrivate(file: string, content: string | Uint8Array): void 
   const fd = openOwn(file, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
   try {
     fchmodSync(fd, 0o600);
-    writeAll(fd, content);
+    writeFileSync(fd, content);
   } finally {
     closeSync(fd);
   }
@@ -94,7 +83,8 @@ export function cutToTail(file: string, max: number, keep: number): void {
     // Start on a whole line: the first one in the tail is most likely cut.
     const kept = tail.subarray(tail.indexOf(0x0a) + 1);
     ftruncateSync(fd, 0);
-    writeAll(fd, kept);
+    // Reads at a position leave the descriptor's offset at 0, where this write starts.
+    writeFileSync(fd, kept);
     fchmodSync(fd, 0o600);
   } finally {
     closeSync(fd);
