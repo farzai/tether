@@ -91,8 +91,8 @@ the description, re-run the quality job: it reads the description as it is when 
 
 ## Baseline
 
-`baseline.json` holds the default branch's numbers, measured where the gate compares them (the quality job's
-Linux runner; macOS measures slightly lower line coverage, since some code paths are platform-specific): coverage, functions measured, functions over CRAP 10, duplicate
+`baseline.json` holds the default branch's numbers. Line coverage moves by about 0.06 points between runs of the
+same code (some paths depend on timing), which is one more reason a drop alone never fails a PR: coverage, functions measured, functions over CRAP 10, duplicate
 pairs, and the full mutation score from `full_baseline.py`, which mutates every site under `src/` with the gate's own
 machinery. `.github/workflows/mutation-baseline.yml` runs it on a GitHub runner, by hand or on a pull request that
 changes the script or that workflow, always on the base branch's `src/`. Copy its `RESULT` line and the run's URL
