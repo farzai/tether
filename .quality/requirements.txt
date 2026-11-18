@@ -1,0 +1,8 @@
+# Quality gate tools, pinned to commits (unclebob/*, 0BSD). Installed into a throwaway venv by the quality job.
+# Update a pin only after running the gate on a branch; there are no tagged releases to follow.
+crapper @ git+https://github.com/unclebob/crapper@6fd92c4c9bcc56efb64a2f8743d5a2993bcfd42d
+dryer @ git+https://github.com/unclebob/dryer@66ff6d21a42c04afcad89c78a80066176d1294b0
+mutator @ git+https://github.com/unclebob/mutator@a5a0cb803b66e0cdb8bf471b3b08af701d424a41
+# Their only third-party dependencies, pinned so a new release cannot change a verdict.
+tree-sitter==0.26.0
+tree-sitter-language-pack==1.23.1

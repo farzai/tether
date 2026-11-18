@@ -4,3 +4,4 @@ coverage/
 .claude/settings.local.json
 *.log
 target/
+__pycache__/

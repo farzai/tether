@@ -28,3 +28,88 @@ jobs:
       - run: bun run lint
       - run: bun run typecheck
       - run: bun run test
+
+  # The engineering quality gates on the lines a pull request changes (issue #20, .quality/gate.py,
+  # .quality/README.md). Only the first two steps (checkout and the render of the description) get the token,
+  # and both run before any code from the pull request (bun install is the first); no later step or post step
+  # gets it.
+  quality:
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: read
+    runs-on: ubuntu-latest
+    # Mutation stops itself inside a 30-minute budget and still writes its report; setup stays well under the rest.
+    timeout-minutes: 45
+    steps:
+      - name: Check out the pull request
+        # Not actions/checkout: it keeps github.token for its post step, which runs at the end of the job, after
+        # code from the pull request. This fetches GitHub's merge commit with full history (the gate diffs against
+        # its first parent and checks the base out), passes the token to git through the environment only for the
+        # fetch, and stores no credential.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+          MERGE_REF: ${{ github.ref }}
+        run: |
+          set -o pipefail
+          find . -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          git init --quiet .
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth" \
+            git fetch --quiet --no-tags "$REPO_URL" "+$MERGE_REF:refs/remotes/pull/merge"
+          git checkout --quiet --detach refs/remotes/pull/merge
+      - name: Render the pull request description
+        # The gate reads "Equivalent mutant:" waivers from GitHub's own rendering of the description (POST
+        # /markdown, gfm), so a waiver counts only where a reviewer sees it on the PR page. Fetched now rather than
+        # taken from the event, so re-running this job after editing the description sees the edit. python3 -I
+        # keeps the checkout off sys.path. The HTML's sha256 is a step output, which no later step can change.
+        id: description
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.url }}
+          API_URL: ${{ github.api_url }}
+        run: |
+          set -o pipefail
+          curl --proto '=https' --tlsv1.2 --retry 5 --fail --silent --show-error \
+            --header "Authorization: Bearer $GH_TOKEN" --header "Accept: application/vnd.github+json" "$PR_URL" \
+            | python3 -I -c 'import json, sys; json.dump({"text": json.load(sys.stdin)["body"] or "", "mode": "gfm"}, sys.stdout)' \
+            | curl --proto '=https' --tlsv1.2 --retry 5 --fail --silent --show-error \
+                --header "Authorization: Bearer $GH_TOKEN" --header "Accept: application/vnd.github+json" \
+                --header "Content-Type: application/json" --data-binary @- "$API_URL/markdown" \
+            > "$RUNNER_TEMP/pr-body.html"
+          echo "sha256=$(sha256sum "$RUNNER_TEMP/pr-body.html" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: No sudo for the gate
+        # The gate runs code from the pull request and every mutant of it, and none of that may run as root. The
+        # hosted runner's passwordless sudo rule is dropped, and the job fails if sudo still works.
+        run: |
+          if command -v sudo >/dev/null 2>&1; then
+            sudo -n rm -f /etc/sudoers.d/runner 2>/dev/null || true
+            if sudo -n true 2>/dev/null; then echo "sudo still works"; exit 1; fi
+          fi
+      # Both actions default `token` to github.token; with an empty token they send no auth.
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+          no-cache: true
+          token: ""
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          token: ""
+      - run: bun install --frozen-lockfile
+      - name: Install quality tools
+        # Pinned commits and versions in .quality/requirements.txt, in a venv that is thrown away with the job.
+        run: |
+          python -m venv "$RUNNER_TEMP/quality-venv"
+          "$RUNNER_TEMP/quality-venv/bin/pip" install --quiet -r .quality/requirements.txt
+      - name: Gate self-tests
+        run: |
+          export PATH="$RUNNER_TEMP/quality-venv/bin:$PATH"
+          python -m unittest discover -s .quality -p 'test_*.py'
+      - name: Quality gate
+        env:
+          DESCRIPTION_SHA256: ${{ steps.description.outputs.sha256 }}
+        run: |
+          export PATH="$RUNNER_TEMP/quality-venv/bin:$PATH"
+          python .quality/gate.py --description-html "$RUNNER_TEMP/pr-body.html" --description-sha256 "$DESCRIPTION_SHA256"
