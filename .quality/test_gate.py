@@ -451,7 +451,7 @@ class QualityWorkflow(unittest.TestCase):
         for action in ("oven-sh/setup-bun@", "actions/setup-python@"):
             with self.subTest(action=action):
                 _, block = self.step(action)
-                self.assertIn("token: ''", block)
+                self.assertIn('token: ""', block)
         uses = [block for block in workflow_steps() if block.startswith("uses:")]
         self.assertEqual(len(uses), 2)
 

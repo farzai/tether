@@ -92,11 +92,11 @@ jobs:
         with:
           bun-version: 1.4.2
           no-cache: true
-          token: ''
+          token: ""
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: '3.12'
-          token: ''
+          python-version: "3.12"
+          token: ""
       - run: bun install --frozen-lockfile
       - name: Install quality tools
         # Pinned commits and versions in .quality/requirements.txt, in a venv that is thrown away with the job.

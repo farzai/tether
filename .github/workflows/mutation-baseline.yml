@@ -67,12 +67,12 @@ jobs:
         with:
           bun-version: 1.4.2
           no-cache: true
-          token: ''
+          token: ""
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         if: steps.wanted.outputs.run == 'true'
         with:
-          python-version: '3.12'
-          token: ''
+          python-version: "3.12"
+          token: ""
       - if: steps.wanted.outputs.run == 'true'
         run: bun install --frozen-lockfile
       - name: Install quality tools
@@ -83,7 +83,7 @@ jobs:
       - name: Mutate every site
         if: steps.wanted.outputs.run == 'true'
         env:
-          BASELINE_BUDGET_SECONDS: '19800'
+          BASELINE_BUDGET_SECONDS: "19800"
         run: |
           export PATH="$RUNNER_TEMP/quality-venv/bin:$PATH"
           python .quality/full_baseline.py
