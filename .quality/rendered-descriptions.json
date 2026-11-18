@@ -1,0 +1,98 @@
+{
+  "plain": {
+    "body": "Summary.\n\nEquivalent mutant: src/a.ts:3 the two branches return the same value\n",
+    "html": "<p>Summary.</p>\n<p>Equivalent mutant: src/a.ts:3 the two branches return the same value</p>"
+  },
+  "backtick_fence": {
+    "body": "Example:\n\n```text\nEquivalent mutant: src/a.ts:4 the two branches return the same value\n```\n\nEquivalent mutant: src/a.ts:3 the two branches return the same value\n",
+    "html": "<p>Example:</p>\n<pre lang=\"text\" class=\"notranslate\"><code class=\"notranslate\">Equivalent mutant: src/a.ts:4 the two branches return the same value\n</code></pre>\n<p>Equivalent mutant: src/a.ts:3 the two branches return the same value</p>"
+  },
+  "tilde_fence": {
+    "body": "~~~~\nEquivalent mutant: src/a.ts:3 the two branches return the same value\n```\nstill code\n~~~~\n",
+    "html": "<pre class=\"notranslate\"><code class=\"notranslate\">Equivalent mutant: src/a.ts:3 the two branches return the same value\n```\nstill code\n</code></pre>"
+  },
+  "unclosed_fence": {
+    "body": "  ```\nEquivalent mutant: src/a.ts:3 the two branches return the same value\n",
+    "html": "<pre class=\"notranslate\"><code class=\"notranslate\">Equivalent mutant: src/a.ts:3 the two branches return the same value\n</code></pre>"
+  },
+  "comment": {
+    "body": "<!--\nEquivalent mutant: src/a.ts:4 the two branches return the same value\n-->\n\nEquivalent mutant: src/a.ts:3 the two branches return the same value\n",
+    "html": "\n<p>Equivalent mutant: src/a.ts:3 the two branches return the same value</p>"
+  },
+  "unclosed_comment": {
+    "body": "text <!-- hidden\nEquivalent mutant: src/a.ts:3 the two branches return the same value\n",
+    "html": "<p>text &lt;!-- hidden<br>\nEquivalent mutant: src/a.ts:3 the two branches return the same value</p>"
+  },
+  "markup_before": {
+    "body": "<!-- note -->Equivalent mutant: src/a.ts:3 the two branches return the same value\n",
+    "html": "Equivalent mutant: src/a.ts:3 the two branches return the same value"
+  },
+  "link_reference_title": {
+    "body": "[x]: /u \"\nEquivalent mutant: src/a.ts:3 the two branches return the same value\n\"\n",
+    "html": ""
+  },
+  "multi_line_alt": {
+    "body": "<img alt=\"\nEquivalent mutant: src/a.ts:3 the two branches return the same value\n\">\n",
+    "html": "<p><a target=\"_blank\" rel=\"noopener noreferrer\" href=\"\"><img alt=\"\nEquivalent mutant: src/a.ts:3 the two branches return the same value\n\" style=\"max-width: 100%;\"></a></p>"
+  },
+  "attribute_across_blank_lines": {
+    "body": "<div title=\"\n\nEquivalent mutant: src/a.ts:3 the two branches return the same value\n\n\">\n",
+    "html": ""
+  },
+  "hidden_elements": {
+    "body": "<script>\n\nEquivalent mutant: src/a.ts:4 the two branches return the same value\n\n</script>\n\n<STYLE>\n\nEquivalent mutant: src/a.ts:4 the two branches return the same value\n\n</STYLE>\n\n<template>\n\nEquivalent mutant: src/a.ts:4 the two branches return the same value\n\n</template>\n\nEquivalent mutant: src/a.ts:3 the two branches return the same value\n",
+    "html": "&lt;script&gt;\n\nEquivalent mutant: src/a.ts:4 the two branches return the same value\n\n&lt;/script&gt;\n&lt;STYLE&gt;\n\nEquivalent mutant: src/a.ts:4 the two branches return the same value\n\n&lt;/STYLE&gt;\n\n<p>Equivalent mutant: src/a.ts:4 the two branches return the same value</p>\n\n<p>Equivalent mutant: src/a.ts:3 the two branches return the same value</p>"
+  },
+  "continues_paragraph": {
+    "body": "Some text\nEquivalent mutant: src/a.ts:3 the two branches return the same value\n",
+    "html": "<p>Some text<br>\nEquivalent mutant: src/a.ts:3 the two branches return the same value</p>"
+  },
+  "indented": {
+    "body": "Text.\n\n    Equivalent mutant: src/a.ts:3 the two branches return the same value\n",
+    "html": "<p>Text.</p>\n<pre class=\"notranslate\"><code class=\"notranslate\">Equivalent mutant: src/a.ts:3 the two branches return the same value\n</code></pre>"
+  },
+  "adjacent": {
+    "body": "Equivalent mutant: src/a.ts:3 the two branches return the same value\nEquivalent mutant: src/a.ts:4 the two branches return the same value\n\nEquivalent mutant: src/a.ts:5 the two branches return the same value\n",
+    "html": "<p>Equivalent mutant: src/a.ts:3 the two branches return the same value<br>\nEquivalent mutant: src/a.ts:4 the two branches return the same value</p>\n<p>Equivalent mutant: src/a.ts:5 the two branches return the same value</p>"
+  },
+  "crlf": {
+    "body": "```\r\ncode\r\n```\r\n\r\nEquivalent mutant: src/a.ts:3 the two branches return the same value\r\n",
+    "html": "<pre class=\"notranslate\"><code class=\"notranslate\">code\n</code></pre>\n<p>Equivalent mutant: src/a.ts:3 the two branches return the same value</p>"
+  },
+  "backtick_in_info_string": {
+    "body": "```a`b\n<!--\n```\n\nEquivalent mutant: src/a.ts:3 the two branches return the same value\n\n-->\n",
+    "html": "<p>```a`b</p>\n"
+  },
+  "fence_inside_html_block": {
+    "body": "<div>\n```\n</div>\n<!--\n```\n\nEquivalent mutant: src/a.ts:3 the two branches return the same value\n",
+    "html": "<div>\n```\n</div>\n"
+  },
+  "details": {
+    "body": "<details><summary>More</summary>\n\nEquivalent mutant: src/a.ts:3 the two branches return the same value\n\n</details>\n",
+    "html": "<details><summary>More</summary>\n<p>Equivalent mutant: src/a.ts:3 the two branches return the same value</p>\n</details>"
+  },
+  "details_open": {
+    "body": "<details open><summary>More</summary>\n\nEquivalent mutant: src/a.ts:3 the two branches return the same value\n\n</details>\n",
+    "html": "<details open=\"\"><summary>More</summary>\n<p>Equivalent mutant: src/a.ts:3 the two branches return the same value</p>\n</details>"
+  },
+  "blockquote_and_list": {
+    "body": "> Equivalent mutant: src/a.ts:3 the two branches return the same value\n\n- Equivalent mutant: src/a.ts:4 the two branches return the same value\n",
+    "html": "<blockquote>\n<p>Equivalent mutant: src/a.ts:3 the two branches return the same value</p>\n</blockquote>\n<ul>\n<li>Equivalent mutant: src/a.ts:4 the two branches return the same value</li>\n</ul>"
+  },
+  "mention_in_reason": {
+    "body": "Equivalent mutant: src/a.ts:3 the two branches return the same value as @someone said\n",
+    "html": "<p>Equivalent mutant: src/a.ts:3 the two branches return the same value as <a class=\"user-mention notranslate\" data-hovercard-type=\"user\" data-hovercard-url=\"/users/Someone/hovercard\" data-octo-click=\"hovercard-link-click\" data-octo-dimensions=\"link_type:self\" href=\"https://github.com/Someone\">@Someone</a> said</p>"
+  },
+  "entities": {
+    "body": "Equivalent mutant: src/a.ts:3 a < b && c > d holds on both sides\n",
+    "html": "<p>Equivalent mutant: src/a.ts:3 a &lt; b &amp;&amp; c &gt; d holds on both sides</p>"
+  },
+  "bidi_control": {
+    "body": "Equivalent mutant: src/a.ts:3 the two ‮branches return the same\n",
+    "html": "<p>Equivalent mutant: src/a.ts:3 the two ‮branches return the same</p>"
+  },
+  "unclosed_element": {
+    "body": "<div>\n\nEquivalent mutant: src/a.ts:3 the two branches return the same value\n",
+    "html": "<div>\n<p>Equivalent mutant: src/a.ts:3 the two branches return the same value</p></div>"
+  }
+}
