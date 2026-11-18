@@ -1,7 +1,7 @@
 {
-  "measuredOn": "main at 41d3e6c, 2026-11-18",
+  "measuredOn": "main at 41d3e6c, 2026-11-18, on the quality job's runner (ubuntu-latest)",
   "coverage": {
-    "lines": 97.11,
+    "lines": 97.17,
     "functions": 98.96
   },
   "functionsMeasured": 242,
