@@ -2,7 +2,7 @@
 
 The `quality` job in `.github/workflows/ci.yml` runs on every pull request and calls `gate.py`. It follows the
 engineering quality standard as a ratchet: only code the PR adds or changes is judged, so debt already on main never
-blocks a PR. Everything lives in this folder and that one job, so one revert removes it.
+blocks a PR. Everything lives in this folder, that job and `mutation-baseline.yml`, so one revert removes it.
 
 | Check | Fails when | Tool |
 |---|---|---|
@@ -93,8 +93,9 @@ the description, re-run the quality job: it reads the description as it is when 
 
 `baseline.json` holds the default branch's numbers: coverage, functions measured, functions over CRAP 10, duplicate
 pairs, and the full mutation score from `full_baseline.py`, which mutates every site under `src/` with the gate's own
-machinery. Run it by hand on the default branch (it takes a long time) and copy its `RESULT` line into
-`baseline.json`.
+machinery. `.github/workflows/mutation-baseline.yml` runs it on a GitHub runner, by hand or on a pull request that
+changes the script or that workflow, always on the base branch's `src/`. Copy its `RESULT` line and the run's URL
+into `baseline.json`.
 
 ## Running it locally
 

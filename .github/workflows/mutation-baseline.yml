@@ -1,0 +1,89 @@
+name: mutation-baseline
+
+# The full mutation score of src/ for .quality/baseline.json. Never part of an ordinary pull request:
+# a PR is judged on its changed lines by the quality job in ci.yml. It runs by hand, or on a pull request that changes
+# the baseline script, and always measures the BASE branch's src/ code (the PR supplies the tests and the gate).
+# Result: the RESULT line in the log and the step summary; copy the figures and this run's URL into baseline.json.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".quality/full_baseline.py"
+      - ".github/workflows/mutation-baseline.yml"
+
+permissions:
+  contents: read
+
+# A running baseline is never cancelled: a path filter on pull_request matches the whole PR's diff, so every push to
+# such a PR starts this workflow again. The new run waits, and exits at once unless that push changed these files.
+concurrency:
+  group: mutation-baseline-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    # The script stops itself at 330 minutes and still prints its totals; GitHub's own limit is 360.
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Did this push change the baseline?
+        id: wanted
+        env:
+          ACTION: ${{ github.event.action }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -eu
+          run=true
+          if [ "$ACTION" = synchronize ] && changed=$(git diff --name-only "$BEFORE" "$AFTER" 2>/dev/null); then
+            printf '%s\n' "$changed" | grep -qxE '\.quality/full_baseline\.py|\.github/workflows/mutation-baseline\.yml' || run=false
+          fi
+          echo "run=$run" | tee -a "$GITHUB_OUTPUT"
+      - name: Measure the base branch's code
+        if: github.event_name == 'pull_request' && steps.wanted.outputs.run == 'true'
+        run: |
+          set -eu
+          # The source under measurement is the base's; the tests and the gate are the pull request's. The base is the
+          # merge commit's first parent, the tip the merge was built on (the event's base sha can be older than that).
+          BASE_SHA=$(git rev-parse HEAD^1)
+          rm -rf src
+          git checkout "$BASE_SHA" -- src
+          echo "src differs from $BASE_SHA in:"; git diff --stat "$BASE_SHA" -- src
+      - name: No sudo for the measured code
+        # The hosted runner's passwordless sudo rule is dropped, and the job fails if sudo still works.
+        if: steps.wanted.outputs.run == 'true'
+        run: |
+          if command -v sudo >/dev/null 2>&1; then
+            sudo -n rm -f /etc/sudoers.d/runner 2>/dev/null || true
+            if sudo -n true 2>/dev/null; then echo "sudo still works"; exit 1; fi
+          fi
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        if: steps.wanted.outputs.run == 'true'
+        with:
+          bun-version: 1.4.2
+          no-cache: true
+          token: ''
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        if: steps.wanted.outputs.run == 'true'
+        with:
+          python-version: '3.12'
+          token: ''
+      - if: steps.wanted.outputs.run == 'true'
+        run: bun install --frozen-lockfile
+      - name: Install quality tools
+        if: steps.wanted.outputs.run == 'true'
+        run: |
+          python -m venv "$RUNNER_TEMP/quality-venv"
+          "$RUNNER_TEMP/quality-venv/bin/pip" install --quiet -r .quality/requirements.txt
+      - name: Mutate every site
+        if: steps.wanted.outputs.run == 'true'
+        env:
+          BASELINE_BUDGET_SECONDS: '19800'
+        run: |
+          export PATH="$RUNNER_TEMP/quality-venv/bin:$PATH"
+          python .quality/full_baseline.py
