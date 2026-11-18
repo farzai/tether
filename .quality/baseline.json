@@ -7,5 +7,11 @@
   "functionsMeasured": 242,
   "functionsOverCrap10": 0,
   "duplicatePairs": 0,
-  "mutation": null
+  "mutation": {
+    "score": 81.3,
+    "killed": 514,
+    "survived": 118,
+    "sites": 636,
+    "run": "https://github.com/farzai/tether/actions/runs/44246737986"
+  }
 }
