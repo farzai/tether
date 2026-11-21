@@ -554,6 +554,13 @@ task's latest lease (it may have expired, see [Tasks and leases](#6-tasks-and-le
 - A cancelled task that was never leased answers every report with `409 lease_lost`, because no lease
   of it exists.
 - A task of another user, or an unknown id, is `404 not_found` before any of the above.
+- An app MAY end a task as `completed` on its own while `L` still runs, for example when the agent
+  asks the user a question through the app's MCP tools and the user's answer becomes a new task.
+  Until `L` reports, `L` stays the completing lease: its `events` answer `200 leased` with the
+  renewed lease (the client keeps the agent running until it exits), its `complete` records the
+  run's `duration_ms` and `usage` and answers `200 completed`, and its `fail` is
+  `409 invalid_state`. `GET task` shows `completed` meanwhile. Once `L` has sent `complete`, the
+  row "`completed` by L" applies. The client needs nothing new: it reports as it always does.
 
 ## 13. Errors
 
